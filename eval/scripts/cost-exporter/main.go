@@ -25,7 +25,7 @@ const (
 	fargatePricePerGBHour   = 0.004445
 )
 
-// Baseline VM specs (matching IONOS provisioned VMs).
+// Baseline VM specs (matching cloud provisioned VMs).
 const (
 	baselineVCPUs   = 8
 	baselineMemryGB = 16

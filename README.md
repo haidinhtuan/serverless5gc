@@ -78,7 +78,7 @@ The implementation covers key protocol aspects for fair benchmarking:
 | SCTP Proxy | Custom Go binary | SCTP termination from gNB, NGAP routing to HTTP |
 | RAN Simulator | [UERANSIM](https://github.com/aligungr/UERANSIM) | Industry-standard open-source gNB/UE simulator |
 | Monitoring | [Prometheus](https://prometheus.io/) + [Grafana](https://grafana.com/) + [cAdvisor](https://github.com/google/cadvisor) | Resource and cost metric collection |
-| Infrastructure | [IONOS Cloud](https://cloud.ionos.de/) via [ionosctl](https://github.com/ionos-cloud/ionosctl) | Reproducible VM provisioning |
+| Infrastructure | Cloud VMs (Debian/Ubuntu) | Reproducible VM provisioning |
 
 ### Go Dependencies
 
@@ -159,7 +159,7 @@ serverless5gc/
 │   │   ├── prometheus.yml
 │   │   ├── grafana-dashboard.json
 │   │   └── docker-compose.yml
-│   └── ionos/
+│   └── cloud/
 │       ├── provision.sh         # Full 5-VM provisioning
 │       └── smoke-test.sh        # 2-VM smoke test with auto-teardown
 ├── eval/
@@ -177,10 +177,6 @@ serverless5gc/
 │       ├── analyze.py           # Metric analysis and cost projection
 │       ├── charts.py            # Visualization generation
 │       └── requirements.txt
-├── docs/
-│   └── plans/
-│       ├── 2026-02-15-serverless-5gc-design.md
-│       └── 2026-02-15-serverless-5gc-implementation.md
 ├── go.mod
 ├── go.sum
 └── Makefile
@@ -196,7 +192,7 @@ serverless5gc/
 - [OpenFaaS CLI (`faas-cli`)](https://docs.openfaas.com/cli/install/)
 - [Helm 3](https://helm.sh/docs/intro/install/)
 - [UERANSIM](https://github.com/aligungr/UERANSIM) (for testing)
-- [ionosctl](https://github.com/ionos-cloud/ionosctl) (for cloud deployment)
+- Cloud VM provider with SSH access (for deployment)
 
 ### Build
 
@@ -249,14 +245,14 @@ cd deploy/baselines/free5gc
 docker compose up -d
 ```
 
-### IONOS Cloud Provisioning
+### Cloud Provisioning
 
 ```bash
 # Full 5-VM deployment
-./deploy/ionos/provision.sh
+./deploy/cloud/provision.sh
 
 # Quick 2-VM smoke test (auto-teardown)
-./deploy/ionos/smoke-test.sh
+./deploy/cloud/smoke-test.sh
 ```
 
 ## Evaluation
@@ -413,8 +409,6 @@ The custom cost exporter (`eval/scripts/cost-exporter/`) exposes projected Lambd
 |----------|-----|
 | AWS Lambda Pricing | https://aws.amazon.com/lambda/pricing/ |
 | AWS Fargate Pricing | https://aws.amazon.com/fargate/pricing/ |
-| IONOS Cloud | https://cloud.ionos.de/ |
-| ionosctl CLI | https://github.com/ionos-cloud/ionosctl |
 
 ## License
 

@@ -25,7 +25,8 @@ CLAUDE.md
 # Internal docs (design plans, implementation notes)
 docs/
 
-# IONOS provisioning (contains local paths)
+# Cloud provisioning scripts (contains local paths and credentials)
+deploy/cloud/
 deploy/ionos/
 
 # Temporary
