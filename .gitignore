@@ -1,0 +1,23 @@
+# Environment files with secrets
+.env
+.env.*
+
+# Go build artifacts
+bin/
+*.exe
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Evaluation results (large data files)
+eval/results/
+
+# Temporary
+tmp/
+*.tmp
