@@ -101,3 +101,153 @@ func TestRouteNGAP_SuccessfulOutcomeNoRoute(t *testing.T) {
 		t.Fatal("expected error for successful outcome without registered route")
 	}
 }
+
+func TestParseNGAPMessage_InitialUEMessage(t *testing.T) {
+	// Construct a simplified InitialUEMessage with IEs encoded in our TLV format:
+	// [NGAP header: 3 bytes] [criticality: 1 byte] [numIEs: 2 bytes]
+	// Each IE: [ID: 2 bytes] [criticality: 1 byte] [length: 2 bytes] [value]
+	pdu := buildTestNGAPMessage(
+		0x00,                           // initiatingMessage
+		ProcedureCodeInitialUEMessage, // procedureCode 15
+		[]testIE{
+			{id: IEID_RAN_UE_NGAP_ID, value: []byte{0x00, 0x00, 0x00, 0x2A}}, // RAN-UE-NGAP-ID = 42
+			{id: IEID_NAS_PDU, value: []byte{0x7E, 0x00, 0x41}},               // NAS PDU (Registration Request header)
+			{id: IEID_UserLocationInfo, value: []byte{0x01, 0x02, 0x03, 0x04}}, // User Location Info (raw)
+		},
+	)
+
+	ctx, err := ParseNGAPMessage(pdu)
+	if err != nil {
+		t.Fatalf("ParseNGAPMessage error: %v", err)
+	}
+
+	if ctx.Route.FunctionName != "amf-initial-registration" {
+		t.Errorf("FunctionName = %q, want amf-initial-registration", ctx.Route.FunctionName)
+	}
+	if ctx.RANUeNgapID != 42 {
+		t.Errorf("RANUeNgapID = %d, want 42", ctx.RANUeNgapID)
+	}
+	if len(ctx.NASPDU) != 3 {
+		t.Errorf("NAS-PDU len = %d, want 3", len(ctx.NASPDU))
+	}
+	if ctx.NASPDU[0] != 0x7E {
+		t.Errorf("NAS-PDU[0] = 0x%02x, want 0x7E", ctx.NASPDU[0])
+	}
+	if len(ctx.UserLocationInfo) != 4 {
+		t.Errorf("UserLocationInfo len = %d, want 4", len(ctx.UserLocationInfo))
+	}
+}
+
+func TestParseNGAPMessage_UplinkNASTransport(t *testing.T) {
+	pdu := buildTestNGAPMessage(
+		0x00,                              // initiatingMessage
+		ProcedureCodeUplinkNASTransport, // procedureCode 46
+		[]testIE{
+			{id: IEID_AMF_UE_NGAP_ID, value: []byte{0x00, 0x00, 0x00, 0x05}}, // AMF-UE-NGAP-ID = 5
+			{id: IEID_RAN_UE_NGAP_ID, value: []byte{0x00, 0x00, 0x00, 0x03}}, // RAN-UE-NGAP-ID = 3
+			{id: IEID_NAS_PDU, value: []byte{0x7E, 0x00, 0x5E}},               // NAS PDU (SMC Complete)
+		},
+	)
+
+	ctx, err := ParseNGAPMessage(pdu)
+	if err != nil {
+		t.Fatalf("ParseNGAPMessage error: %v", err)
+	}
+
+	if ctx.AMFUeNgapID != 5 {
+		t.Errorf("AMFUeNgapID = %d, want 5", ctx.AMFUeNgapID)
+	}
+	if ctx.RANUeNgapID != 3 {
+		t.Errorf("RANUeNgapID = %d, want 3", ctx.RANUeNgapID)
+	}
+	if len(ctx.NASPDU) != 3 {
+		t.Errorf("NAS-PDU len = %d, want 3", len(ctx.NASPDU))
+	}
+}
+
+func TestParseNGAPMessage_NoIEs(t *testing.T) {
+	// Minimal NGAP message with no IEs
+	pdu := buildTestNGAPMessage(
+		0x00,
+		ProcedureCodeNGSetup,
+		nil, // no IEs
+	)
+
+	ctx, err := ParseNGAPMessage(pdu)
+	if err != nil {
+		t.Fatalf("ParseNGAPMessage error: %v", err)
+	}
+	if ctx.RANUeNgapID != 0 {
+		t.Errorf("RANUeNgapID = %d, want 0 (unset)", ctx.RANUeNgapID)
+	}
+	if ctx.NASPDU != nil {
+		t.Errorf("NAS-PDU should be nil, got %v", ctx.NASPDU)
+	}
+}
+
+func TestParseNGAPMessage_TooShort(t *testing.T) {
+	_, err := ParseNGAPMessage([]byte{0x00, 0x0f})
+	if err == nil {
+		t.Fatal("expected error for too-short message")
+	}
+}
+
+func TestBuildDownlinkNASTransport(t *testing.T) {
+	nasPDU := []byte{0x7E, 0x00, 0x42, 0x01} // Registration Accept header
+	pdu := BuildDownlinkNASTransport(100, 42, nasPDU)
+
+	if len(pdu) == 0 {
+		t.Fatal("BuildDownlinkNASTransport returned empty PDU")
+	}
+
+	// Parse the result and verify IEs
+	ctx, err := ParseNGAPMessage(pdu)
+	if err != nil {
+		t.Fatalf("parsing built message: %v", err)
+	}
+	if ctx.AMFUeNgapID != 100 {
+		t.Errorf("AMF-UE-NGAP-ID = %d, want 100", ctx.AMFUeNgapID)
+	}
+	if ctx.RANUeNgapID != 42 {
+		t.Errorf("RAN-UE-NGAP-ID = %d, want 42", ctx.RANUeNgapID)
+	}
+	if len(ctx.NASPDU) != len(nasPDU) {
+		t.Errorf("NAS-PDU len = %d, want %d", len(ctx.NASPDU), len(nasPDU))
+	}
+}
+
+// --- Test helpers ---
+
+type testIE struct {
+	id    int
+	value []byte
+}
+
+// buildTestNGAPMessage constructs a simplified NGAP PDU for testing.
+// Format: [msgType(1)][procedureCode(1)][criticality(1)][numIEs(2)][IEs...]
+// Each IE: [id(2)][criticality(1)][length(2)][value...]
+func buildTestNGAPMessage(msgTypeByte byte, procedureCode int, ies []testIE) []byte {
+	header := []byte{
+		msgTypeByte,          // NGAP PDU choice byte
+		byte(procedureCode), // procedure code
+		0x00,                 // criticality: reject
+	}
+
+	// Number of IEs (2 bytes big-endian)
+	numIEs := len(ies)
+	header = append(header, byte(numIEs>>8), byte(numIEs&0xFF))
+
+	for _, ie := range ies {
+		// IE ID (2 bytes big-endian)
+		header = append(header, byte(ie.id>>8), byte(ie.id&0xFF))
+		// Criticality
+		header = append(header, 0x00)
+		// Value length (2 bytes big-endian)
+		vLen := len(ie.value)
+		header = append(header, byte(vLen>>8), byte(vLen&0xFF))
+		// Value
+		header = append(header, ie.value...)
+	}
+
+	return header
+}
