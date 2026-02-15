@@ -173,6 +173,199 @@ func TestEncodeGPRSTimer3(t *testing.T) {
 	}
 }
 
+func TestDecodeRegistrationRequest_WithUESecCap(t *testing.T) {
+	// Build Registration Request with UE Security Capability optional IE
+	data := []byte{
+		0x7E,       // EPD: 5GMM
+		0x00,       // Security Header: plain
+		0x41,       // Message Type: Registration Request
+		0x01,       // Registration Type: Initial(1) | ngKSI=0
+		0x00, 0x08, // Mobile Identity Length = 8
+		0x01,                   // Type: SUCI
+		0x10, 0x10, 0x10,     // MCC/MNC
+		0x00, 0x00,            // Routing indicator
+		0x00,                  // Protection scheme
+		0x10,                  // MSIN
+		// Optional IE: UE Security Capability (Tag 0x2E)
+		0x2E,       // Tag
+		0x02,       // Length = 2
+		0xE0,       // EA0=1, EA1=1, EA2=1, EA3=0
+		0xE0,       // IA0=1, IA1=1, IA2=1, IA3=0
+	}
+
+	req, err := DecodeRegistrationRequest(data)
+	if err != nil {
+		t.Fatalf("DecodeRegistrationRequest error: %v", err)
+	}
+	if req.UESecCap == nil {
+		t.Fatal("UESecCap is nil, expected parsed value")
+	}
+	if !req.UESecCap.EA0 || !req.UESecCap.EA1 || !req.UESecCap.EA2 {
+		t.Errorf("EA0/EA1/EA2 should be true, got %+v", req.UESecCap)
+	}
+	if req.UESecCap.EA3 {
+		t.Error("EA3 should be false")
+	}
+	if !req.UESecCap.IA0 || !req.UESecCap.IA1 || !req.UESecCap.IA2 {
+		t.Errorf("IA0/IA1/IA2 should be true, got %+v", req.UESecCap)
+	}
+}
+
+func TestDecodeRegistrationRequest_WithRequestedNSSAI(t *testing.T) {
+	// Build Registration Request with Requested NSSAI optional IE
+	data := []byte{
+		0x7E,       // EPD: 5GMM
+		0x00,       // Security Header: plain
+		0x41,       // Message Type: Registration Request
+		0x01,       // Registration Type: Initial(1) | ngKSI=0
+		0x00, 0x08, // Mobile Identity Length = 8
+		0x01,                   // Type: SUCI
+		0x10, 0x10, 0x10,     // MCC/MNC
+		0x00, 0x00,            // Routing indicator
+		0x00,                  // Protection scheme
+		0x10,                  // MSIN
+		// Optional IE: Requested NSSAI (Tag 0x15)
+		0x15,       // Tag
+		0x07,       // Length = 7 (one SST-only: 2 bytes, one SST+SD: 5 bytes)
+		0x01, 0x01, // S-NSSAI: len=1, SST=1
+		0x04, 0x02, 0x01, 0x02, 0x03, // S-NSSAI: len=4, SST=2, SD=010203
+	}
+
+	req, err := DecodeRegistrationRequest(data)
+	if err != nil {
+		t.Fatalf("DecodeRegistrationRequest error: %v", err)
+	}
+	if len(req.RequestedNSSAI) != 2 {
+		t.Fatalf("RequestedNSSAI len = %d, want 2", len(req.RequestedNSSAI))
+	}
+	if req.RequestedNSSAI[0].SST != 1 {
+		t.Errorf("RequestedNSSAI[0].SST = %d, want 1", req.RequestedNSSAI[0].SST)
+	}
+	if req.RequestedNSSAI[0].HasSD {
+		t.Error("RequestedNSSAI[0].HasSD should be false")
+	}
+	if req.RequestedNSSAI[1].SST != 2 {
+		t.Errorf("RequestedNSSAI[1].SST = %d, want 2", req.RequestedNSSAI[1].SST)
+	}
+	if !req.RequestedNSSAI[1].HasSD {
+		t.Error("RequestedNSSAI[1].HasSD should be true")
+	}
+	if req.RequestedNSSAI[1].SD != [3]byte{0x01, 0x02, 0x03} {
+		t.Errorf("RequestedNSSAI[1].SD = %v, want [1 2 3]", req.RequestedNSSAI[1].SD)
+	}
+}
+
+func TestDecodeSecurityModeComplete(t *testing.T) {
+	// Build Security Mode Complete:
+	// EPD(0x7E) | SecHdr(0x04) | MsgType(0x5E)
+	data := []byte{
+		0x7E,       // EPD: 5GMM
+		0x04,       // Security Header: integrity protected with new context
+		0x5E,       // Message Type: Security Mode Complete
+	}
+
+	smc, err := DecodeSecurityModeComplete(data)
+	if err != nil {
+		t.Fatalf("DecodeSecurityModeComplete error: %v", err)
+	}
+	if smc == nil {
+		t.Fatal("result is nil")
+	}
+}
+
+func TestDecodeSecurityModeComplete_WithIMEISV(t *testing.T) {
+	// Security Mode Complete with IMEISV optional IE (tag 0x77)
+	data := []byte{
+		0x7E,       // EPD: 5GMM
+		0x04,       // Security Header
+		0x5E,       // Message Type: Security Mode Complete
+		// Optional IE: IMEISV (tag 0x77)
+		0x77,       // Tag
+		0x09,       // Length = 9
+		0x05,       // Type: IMEISV
+		0x98, 0x76, 0x54, 0x32, 0x10, 0x98, 0x76, 0x50, // IMEISV BCD digits
+	}
+
+	smc, err := DecodeSecurityModeComplete(data)
+	if err != nil {
+		t.Fatalf("DecodeSecurityModeComplete error: %v", err)
+	}
+	if smc.IMEISV == "" {
+		t.Error("IMEISV should not be empty when IE is present")
+	}
+}
+
+func TestDecodeSecurityModeComplete_InvalidEPD(t *testing.T) {
+	data := []byte{0xFF, 0x04, 0x5E}
+	_, err := DecodeSecurityModeComplete(data)
+	if err == nil {
+		t.Fatal("expected error for invalid EPD")
+	}
+}
+
+func TestDecodeSecurityModeComplete_WrongMsgType(t *testing.T) {
+	data := []byte{0x7E, 0x04, 0x5D} // 0x5D = Security Mode Command, not Complete
+	_, err := DecodeSecurityModeComplete(data)
+	if err == nil {
+		t.Fatal("expected error for wrong message type")
+	}
+}
+
+func TestDecodeSecurityModeComplete_TooShort(t *testing.T) {
+	_, err := DecodeSecurityModeComplete([]byte{0x7E, 0x04})
+	if err == nil {
+		t.Fatal("expected error for too-short message")
+	}
+}
+
+func TestEncodeRegistrationAccept_AllIEs(t *testing.T) {
+	accept := &RegistrationAccept{
+		RegistrationResult: RegResult3GPPAccess,
+		GUTI:               "5g-guti-test-001",
+		AllowedNSSAI: []NSSAI{
+			{SST: 1, HasSD: false},
+			{SST: 2, SD: [3]byte{0x01, 0x02, 0x03}, HasSD: true},
+		},
+		T3512Value: T3512Default,
+	}
+
+	data := EncodeRegistrationAccept(accept)
+
+	// Verify all IEs are present
+	hasGUTI, hasNSSAI, hasT3512 := false, false, false
+	for i := 4; i < len(data); i++ {
+		switch data[i] {
+		case IETag5GGUTI:
+			hasGUTI = true
+		case IETagAllowedNSSAI:
+			hasNSSAI = true
+		case IETagT3512Value:
+			hasT3512 = true
+		}
+	}
+	if !hasGUTI {
+		t.Error("missing 5G-GUTI IE")
+	}
+	if !hasNSSAI {
+		t.Error("missing Allowed NSSAI IE")
+	}
+	if !hasT3512 {
+		t.Error("missing T3512 timer IE")
+	}
+}
+
+func TestEncodeRegistrationAccept_NoOptionalIEs(t *testing.T) {
+	accept := &RegistrationAccept{
+		RegistrationResult: RegResult3GPPAccess,
+	}
+
+	data := EncodeRegistrationAccept(accept)
+	// Should be exactly 4 bytes: EPD + SecHdr + MsgType + RegResult
+	if len(data) != 4 {
+		t.Errorf("length = %d, want 4 (header only)", len(data))
+	}
+}
+
 func TestDecodeEncodeNSSAI(t *testing.T) {
 	original := []NSSAI{
 		{SST: 1, HasSD: false},

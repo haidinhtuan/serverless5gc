@@ -207,6 +207,54 @@ func EncodeSecurityModeCommand(smc *SecurityModeCommand) []byte {
 	return msg
 }
 
+// DecodeSecurityModeComplete decodes a NAS Security Mode Complete from wire bytes.
+// Wire format (TS 24.501 Section 8.2.26):
+//
+//	Byte 0: Extended Protocol Discriminator (0x7E)
+//	Byte 1: Security Header Type
+//	Byte 2: Message Type (0x5E)
+//	Byte 3+: Optional IEs (IMEISV via 5GS Mobile Identity, NAS message container)
+func DecodeSecurityModeComplete(data []byte) (*SecurityModeComplete, error) {
+	if len(data) < 3 {
+		return nil, fmt.Errorf("NAS Security Mode Complete too short: %d bytes", len(data))
+	}
+
+	if data[0] != EPD5GMM {
+		return nil, fmt.Errorf("unexpected EPD: 0x%02x, want 0x%02x", data[0], EPD5GMM)
+	}
+	if data[2] != MsgTypeSecurityModeComplete {
+		return nil, fmt.Errorf("unexpected message type: 0x%02x, want 0x%02x", data[2], MsgTypeSecurityModeComplete)
+	}
+
+	smc := &SecurityModeComplete{}
+
+	// Parse optional IEs after header
+	offset := 3
+	for offset < len(data)-1 {
+		ieTag := data[offset]
+		offset++
+		if offset >= len(data) {
+			break
+		}
+		ieLen := int(data[offset])
+		offset++
+		if offset+ieLen > len(data) {
+			break
+		}
+		ieVal := data[offset : offset+ieLen]
+		offset += ieLen
+
+		switch ieTag {
+		case IETag5GGUTI: // IMEISV uses the 5GS Mobile Identity IE container (tag 0x77)
+			if len(ieVal) >= 1 && (ieVal[0]&0x07) == MobileIdentityImeisv {
+				smc.IMEISV = decodeIMEISV(ieVal)
+			}
+		}
+	}
+
+	return smc, nil
+}
+
 // --- Internal encoding/decoding helpers ---
 
 func decodeSUCI(data []byte) string {
@@ -227,6 +275,23 @@ func decodeSUCI(data []byte) string {
 		}
 	}
 	return fmt.Sprintf("imsi-%s%s%s", mcc, mnc, msin)
+}
+
+func decodeIMEISV(data []byte) string {
+	// IMEISV: type(1) + BCD-encoded digits
+	if len(data) < 2 {
+		return ""
+	}
+	imeisv := ""
+	for i := 1; i < len(data); i++ {
+		lo := data[i] & 0x0F
+		hi := (data[i] >> 4) & 0x0F
+		imeisv += fmt.Sprintf("%d", lo)
+		if hi != 0x0F {
+			imeisv += fmt.Sprintf("%d", hi)
+		}
+	}
+	return imeisv
 }
 
 func decodeGUTI(data []byte) string {
