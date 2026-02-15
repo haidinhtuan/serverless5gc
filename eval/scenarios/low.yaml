@@ -1,0 +1,25 @@
+scenario: low
+description: "IoT/rural - 100 UEs, 1 reg/sec"
+duration_minutes: 30
+runs: 3
+
+ueransim:
+  gnb:
+    mcc: "001"
+    mnc: "01"
+    tac: 1
+    link_ip: "LOADGEN_IP"
+    ngap_ip: "TARGET_AMF_IP"
+    gtp_ip: "LOADGEN_IP"
+
+  ue_profile:
+    count: 100
+    registration_rate_per_sec: 1
+    pdu_sessions_per_ue: 1
+    imsi_start: "001010000000001"
+    key: "465B5CE8B199B49FAA5F0A2EE238A6BC"
+    opc: "E8ED289DEBA952E4283B54E88E6183CA"
+    dnn: "internet"
+    snssai:
+      sst: 1
+      sd: "010203"
