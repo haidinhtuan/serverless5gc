@@ -1,3 +1,8 @@
+// Package function implements the AMF PDU Session Relay handler.
+// Forwards PDU session establishment requests from the UE to the SMF
+// per TS 23.502 Section 4.3.2.2.1.
+//
+// SBI call: AMF → SMF: Nsmf_PDUSession_CreateSMContext (TS 29.502)
 package function
 
 import (
@@ -42,6 +47,7 @@ func init() {
 }
 
 // PDUSessionRelayRequest is the JSON body for a PDU session relay.
+// Corresponds to Nsmf_PDUSession_CreateSMContext request (TS 29.502).
 type PDUSessionRelayRequest struct {
 	SUPI   string        `json:"supi"`
 	SNSSAI models.SNSSAI `json:"snssai"`
@@ -60,7 +66,11 @@ type smfResponse struct {
 	SessionID string `json:"session_id"`
 }
 
-// Handle forwards a PDU session request to the SMF via SBI client.
+// Handle forwards a PDU session request to the SMF via SBI.
+// Steps per TS 23.502 Section 4.3.2.2.1:
+//  1. Validate UE is in RM-REGISTERED state
+//  2. Forward to SMF: Nsmf_PDUSession_CreateSMContext (TS 29.502)
+//  3. Return SMF response to the UE (via SCTP proxy)
 func Handle(req handler.Request) (handler.Response, error) {
 	ctx := req.Context()
 	if ctx == nil {
@@ -75,7 +85,7 @@ func Handle(req handler.Request) (handler.Response, error) {
 		return errorResp(http.StatusBadRequest, "supi is required"), nil
 	}
 
-	// Verify UE is registered
+	// Verify UE is in RM-REGISTERED state
 	key := "ue:" + relayReq.SUPI
 	var ueCtx models.UEContext
 	if err := store.Get(ctx, key, &ueCtx); err != nil {
@@ -85,10 +95,10 @@ func Handle(req handler.Request) (handler.Response, error) {
 		return errorResp(http.StatusConflict, "UE is not registered"), nil
 	}
 
-	// Forward to SMF
+	// Nsmf_PDUSession_CreateSMContext (TS 29.502)
 	var smfResp smfResponse
 	if err := sbiClient.CallFunction("smf-pdu-session-create", relayReq, &smfResp); err != nil {
-		return errorResp(http.StatusBadGateway, "smf-pdu-session-create: %s", err), nil
+		return errorResp(http.StatusBadGateway, "Nsmf_PDUSession_CreateSMContext: %s", err), nil
 	}
 
 	body, _ := json.Marshal(PDUSessionRelayResponse{

@@ -15,7 +15,7 @@ func TestHandle_ServiceRequest_Success(t *testing.T) {
 	mockStore := state.NewMockKVStore()
 	SetStore(mockStore)
 
-	// Pre-populate: registered UE in IDLE state
+	// Pre-populate: registered UE in CM-IDLE state
 	ueCtx := models.UEContext{
 		SUPI:              "imsi-001010000000001",
 		RegistrationState: "REGISTERED",
@@ -34,15 +34,18 @@ func TestHandle_ServiceRequest_Success(t *testing.T) {
 		t.Fatalf("status = %d, want %d; body: %s", resp.StatusCode, http.StatusOK, resp.Body)
 	}
 
-	var result map[string]string
+	var result ServiceResponse
 	if err := json.Unmarshal(resp.Body, &result); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if result["cm_state"] != "CONNECTED" {
-		t.Errorf("cm_state = %q, want CONNECTED", result["cm_state"])
+	if result.CmState != "CONNECTED" {
+		t.Errorf("cm_state = %q, want CONNECTED", result.CmState)
+	}
+	if result.NASMessage == "" {
+		t.Error("expected NAS Service Accept in response")
 	}
 
-	// Verify store was updated
+	// Verify store was updated with CM-CONNECTED
 	var updated models.UEContext
 	if err := mockStore.Get(context.Background(), "ue:imsi-001010000000001", &updated); err != nil {
 		t.Fatalf("get updated context: %v", err)
@@ -52,11 +55,10 @@ func TestHandle_ServiceRequest_Success(t *testing.T) {
 	}
 }
 
-func TestHandle_ServiceRequest_NotRegistered(t *testing.T) {
+func TestHandle_ServiceRequest_NotRegistered_CauseImplicit(t *testing.T) {
 	mockStore := state.NewMockKVStore()
 	SetStore(mockStore)
 
-	// UE exists but is deregistered
 	ueCtx := models.UEContext{
 		SUPI:              "imsi-001010000000001",
 		RegistrationState: "DEREGISTERED",
@@ -71,6 +73,13 @@ func TestHandle_ServiceRequest_NotRegistered(t *testing.T) {
 	}
 	if resp.StatusCode != http.StatusConflict {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusConflict)
+	}
+
+	// Verify NAS Service Reject with cause code
+	var result map[string]string
+	json.Unmarshal(resp.Body, &result)
+	if result["nas_message"] == "" {
+		t.Error("expected nas_message with Service Reject")
 	}
 }
 

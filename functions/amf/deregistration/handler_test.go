@@ -34,12 +34,15 @@ func TestHandle_Deregistration_Success(t *testing.T) {
 		t.Fatalf("status = %d, want %d; body: %s", resp.StatusCode, http.StatusOK, resp.Body)
 	}
 
-	var result map[string]string
+	var result DeregistrationResponse
 	if err := json.Unmarshal(resp.Body, &result); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if result["status"] != "deregistered" {
-		t.Errorf("status = %q, want deregistered", result["status"])
+	if result.Status != "deregistered" {
+		t.Errorf("status = %q, want deregistered", result.Status)
+	}
+	if result.NASMessage == "" {
+		t.Error("expected NAS Deregistration Accept in response")
 	}
 
 	// Verify UE context was deleted
@@ -49,7 +52,7 @@ func TestHandle_Deregistration_Success(t *testing.T) {
 	}
 }
 
-func TestHandle_Deregistration_NotFound(t *testing.T) {
+func TestHandle_Deregistration_NotFound_CauseImplicit(t *testing.T) {
 	SetStore(state.NewMockKVStore())
 
 	body, _ := json.Marshal(DeregistrationRequest{SUPI: "imsi-999"})
@@ -59,6 +62,13 @@ func TestHandle_Deregistration_NotFound(t *testing.T) {
 	}
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusNotFound)
+	}
+
+	// Verify NAS reject with cause code is included
+	var result map[string]string
+	json.Unmarshal(resp.Body, &result)
+	if result["nas_message"] == "" {
+		t.Error("expected nas_message with cause code in response")
 	}
 }
 

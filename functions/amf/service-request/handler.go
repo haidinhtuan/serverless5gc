@@ -1,7 +1,13 @@
+// Package function implements the AMF Service Request handler.
+// Processes UE Service Request per TS 23.502 Section 4.2.3.2.
+//
+// State transition: CM-IDLE → CM-CONNECTED (TS 23.502 Figure 4.2.3.2-1)
+// Precondition: UE must be in RM-REGISTERED state.
 package function
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -10,6 +16,7 @@ import (
 
 	handler "github.com/openfaas/templates-sdk/go-http"
 	"github.com/tdinh/serverless5gc/pkg/models"
+	"github.com/tdinh/serverless5gc/pkg/nas"
 	"github.com/tdinh/serverless5gc/pkg/state"
 )
 
@@ -34,8 +41,20 @@ type ServiceRequest struct {
 	SUPI string `json:"supi"`
 }
 
-// Handle processes a UE service request.
-// Updates CM state from IDLE to CONNECTED.
+// ServiceResponse is returned on successful service request.
+type ServiceResponse struct {
+	Status     string `json:"status"`
+	SUPI       string `json:"supi"`
+	CmState    string `json:"cm_state"`
+	NASMessage string `json:"nas_message,omitempty"` // hex-encoded NAS Service Accept
+}
+
+// Handle processes a UE service request per TS 23.502 Section 4.2.3.2.
+// Steps:
+//  1. Validate request and read UE context
+//  2. Verify RM-REGISTERED state
+//  3. CM-IDLE → CM-CONNECTED state transition
+//  4. Build NAS Service Accept (TS 24.501 Section 8.2.16)
 func Handle(req handler.Request) (handler.Response, error) {
 	ctx := req.Context()
 	if ctx == nil {
@@ -57,10 +76,16 @@ func Handle(req handler.Request) (handler.Response, error) {
 		return errorResp(http.StatusNotFound, "ue context not found: %s", err), nil
 	}
 
+	// Precondition: UE must be in RM-REGISTERED (TS 23.502 Section 4.2.3.2)
 	if ueCtx.RegistrationState != "REGISTERED" {
-		return errorResp(http.StatusConflict, "UE is not registered (state: %s)", ueCtx.RegistrationState), nil
+		// TS 24.501 Cause #10: Implicitly de-registered
+		rejectNAS := []byte{nas.EPD5GMM, nas.SecurityHeaderPlain, nas.MsgTypeServiceReject, nas.CauseImplicitlyDeregistered}
+		return errorRespWithNAS(http.StatusConflict,
+			hex.EncodeToString(rejectNAS),
+			"UE is not registered (state: %s)", ueCtx.RegistrationState), nil
 	}
 
+	// State transition: CM-IDLE → CM-CONNECTED
 	ueCtx.CmState = "CONNECTED"
 	ueCtx.LastActivity = time.Now()
 
@@ -68,10 +93,14 @@ func Handle(req handler.Request) (handler.Response, error) {
 		return errorResp(http.StatusInternalServerError, "update ue context: %s", err), nil
 	}
 
-	body, _ := json.Marshal(map[string]string{
-		"status":   "connected",
-		"supi":     svcReq.SUPI,
-		"cm_state": "CONNECTED",
+	// Build NAS Service Accept (TS 24.501 Section 8.2.16)
+	svcAcceptNAS := []byte{nas.EPD5GMM, nas.SecurityHeaderPlain, nas.MsgTypeServiceAccept}
+
+	body, _ := json.Marshal(ServiceResponse{
+		Status:     "connected",
+		SUPI:       svcReq.SUPI,
+		CmState:    "CONNECTED",
+		NASMessage: hex.EncodeToString(svcAcceptNAS),
 	})
 	return handler.Response{
 		StatusCode: http.StatusOK,
@@ -83,5 +112,14 @@ func Handle(req handler.Request) (handler.Response, error) {
 func errorResp(status int, format string, args ...interface{}) handler.Response {
 	msg := fmt.Sprintf(format, args...)
 	body, _ := json.Marshal(map[string]string{"error": msg})
+	return handler.Response{StatusCode: status, Body: body}
+}
+
+func errorRespWithNAS(status int, nasHex string, format string, args ...interface{}) handler.Response {
+	msg := fmt.Sprintf(format, args...)
+	body, _ := json.Marshal(map[string]string{
+		"error":       msg,
+		"nas_message": nasHex,
+	})
 	return handler.Response{StatusCode: status, Body: body}
 }

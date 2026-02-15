@@ -8,6 +8,7 @@ import (
 
 	handler "github.com/openfaas/templates-sdk/go-http"
 	"github.com/tdinh/serverless5gc/pkg/models"
+	"github.com/tdinh/serverless5gc/pkg/nas"
 	"github.com/tdinh/serverless5gc/pkg/state"
 )
 
@@ -41,11 +42,13 @@ func TestHandle_Registration_Success(t *testing.T) {
 	SetStore(mockStore)
 
 	mock := newMockSBI()
+	// Nausf_UEAuthentication (TS 29.509) returns SUCCESS
 	mock.responses["ausf-authenticate"] = map[string]string{
 		"auth_result": "SUCCESS",
 		"supi":        "imsi-001010000000001",
-		"kausf":       "aabb",
+		"kausf":       "aabbccdd",
 	}
+	// Nudm_SDM_Get (TS 29.503) returns subscriber data
 	mock.responses["udm-get-subscriber-data"] = models.SubscriberData{
 		SUPI: "imsi-001010000000001",
 		AccessAndMobility: &models.AccessMobData{
@@ -79,11 +82,23 @@ func TestHandle_Registration_Success(t *testing.T) {
 	if regResp.SUPI != "imsi-001010000000001" {
 		t.Errorf("supi = %q, want %q", regResp.SUPI, "imsi-001010000000001")
 	}
+	if regResp.T3512Value != nas.T3512Default {
+		t.Errorf("t3512 = %d, want %d", regResp.T3512Value, nas.T3512Default)
+	}
+	if !regResp.SecurityActivated {
+		t.Error("security_activated = false, want true")
+	}
+	if regResp.NASMessage == "" {
+		t.Error("nas_message is empty, expected NAS Registration Accept")
+	}
+	if len(regResp.AllowedNSSAI) != 1 || regResp.AllowedNSSAI[0].SST != 1 {
+		t.Errorf("allowed_nssai = %+v, want [{SST:1 SD:010203}]", regResp.AllowedNSSAI)
+	}
 
-	// Verify UE context was stored
+	// Verify UE context in store
 	var ueCtx models.UEContext
 	if err := mockStore.Get(context.Background(), "ue:imsi-001010000000001", &ueCtx); err != nil {
-		t.Fatalf("UE context not found in store: %v", err)
+		t.Fatalf("UE context not found: %v", err)
 	}
 	if ueCtx.RegistrationState != "REGISTERED" {
 		t.Errorf("registration_state = %q, want REGISTERED", ueCtx.RegistrationState)
@@ -91,23 +106,44 @@ func TestHandle_Registration_Success(t *testing.T) {
 	if ueCtx.CmState != "CONNECTED" {
 		t.Errorf("cm_state = %q, want CONNECTED", ueCtx.CmState)
 	}
-	if len(ueCtx.NSSAI) != 1 || ueCtx.NSSAI[0].SST != 1 {
-		t.Errorf("NSSAI = %+v, want [{SST:1 SD:010203}]", ueCtx.NSSAI)
+	if ueCtx.AMFUeNgapID == 0 {
+		t.Error("AMF-UE-NGAP-ID should be allocated (non-zero)")
+	}
+	if ueCtx.SecurityCtx == nil {
+		t.Fatal("SecurityCtx is nil")
+	}
+	if ueCtx.SecurityCtx.AuthStatus != "AUTHENTICATED" {
+		t.Errorf("auth_status = %q, want AUTHENTICATED", ueCtx.SecurityCtx.AuthStatus)
+	}
+	if ueCtx.SecurityCtx.SelectedCiphering != nas.CipherAlg5GEA2 {
+		t.Errorf("ciphering_alg = %d, want %d (5G-EA2)", ueCtx.SecurityCtx.SelectedCiphering, nas.CipherAlg5GEA2)
+	}
+	if ueCtx.SecurityCtx.SelectedIntegrity != nas.IntegAlg5GIA2 {
+		t.Errorf("integrity_alg = %d, want %d (5G-IA2)", ueCtx.SecurityCtx.SelectedIntegrity, nas.IntegAlg5GIA2)
+	}
+	if !ueCtx.SecurityCtx.SecurityActivated {
+		t.Error("security_activated = false in stored context")
+	}
+	if ueCtx.T3512Value != nas.T3512Default {
+		t.Errorf("stored t3512 = %d, want %d", ueCtx.T3512Value, nas.T3512Default)
+	}
+	if ueCtx.RegistrationTime.IsZero() {
+		t.Error("registration_time should not be zero")
 	}
 
-	// Verify SBI calls were made
-	if len(mock.calls) != 2 {
-		t.Fatalf("expected 2 SBI calls, got %d", len(mock.calls))
+	// Verify 3GPP call chain order: AUSF → UDM(get) → UDM(register)
+	expectedCalls := []string{"ausf-authenticate", "udm-get-subscriber-data", "udm-registration"}
+	if len(mock.calls) != len(expectedCalls) {
+		t.Fatalf("SBI calls = %v, want %v", mock.calls, expectedCalls)
 	}
-	if mock.calls[0] != "ausf-authenticate" {
-		t.Errorf("first SBI call = %q, want ausf-authenticate", mock.calls[0])
-	}
-	if mock.calls[1] != "udm-get-subscriber-data" {
-		t.Errorf("second SBI call = %q, want udm-get-subscriber-data", mock.calls[1])
+	for i, want := range expectedCalls {
+		if mock.calls[i] != want {
+			t.Errorf("SBI call[%d] = %q, want %q", i, mock.calls[i], want)
+		}
 	}
 }
 
-func TestHandle_Registration_AuthFailure(t *testing.T) {
+func TestHandle_Registration_AuthFailure_CauseIllegalUE(t *testing.T) {
 	mockStore := state.NewMockKVStore()
 	SetStore(mockStore)
 
@@ -118,10 +154,7 @@ func TestHandle_Registration_AuthFailure(t *testing.T) {
 	}
 	SetSBI(mock)
 
-	body, _ := json.Marshal(RegistrationRequest{
-		SUPI: "imsi-001010000000001",
-	})
-
+	body, _ := json.Marshal(RegistrationRequest{SUPI: "imsi-001010000000001"})
 	resp, err := Handle(handler.Request{Body: body, Method: "POST"})
 	if err != nil {
 		t.Fatalf("Handle error: %v", err)
@@ -129,9 +162,16 @@ func TestHandle_Registration_AuthFailure(t *testing.T) {
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusForbidden)
 	}
+
+	// Verify NAS Registration Reject with Cause #3 is included
+	var result map[string]string
+	json.Unmarshal(resp.Body, &result)
+	if result["nas_message"] == "" {
+		t.Error("expected nas_message with Registration Reject in response")
+	}
 }
 
-func TestHandle_Registration_MissingSUPI(t *testing.T) {
+func TestHandle_Registration_MissingSUPI_CauseUEIdentity(t *testing.T) {
 	SetStore(state.NewMockKVStore())
 	SetSBI(newMockSBI())
 
@@ -141,6 +181,13 @@ func TestHandle_Registration_MissingSUPI(t *testing.T) {
 	}
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+	}
+
+	// Verify NAS reject with Cause #9 (UE identity cannot be derived)
+	var result map[string]string
+	json.Unmarshal(resp.Body, &result)
+	if result["nas_message"] == "" {
+		t.Error("expected nas_message with Registration Reject in response")
 	}
 }
 
@@ -154,5 +201,35 @@ func TestHandle_Registration_InvalidJSON(t *testing.T) {
 	}
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+	}
+}
+
+func TestHandle_Registration_AMFUeNgapIDUnique(t *testing.T) {
+	mockStore := state.NewMockKVStore()
+	SetStore(mockStore)
+
+	mock := newMockSBI()
+	mock.responses["ausf-authenticate"] = map[string]string{"auth_result": "SUCCESS", "kausf": "aa"}
+	mock.responses["udm-get-subscriber-data"] = models.SubscriberData{SUPI: "imsi-1"}
+	SetSBI(mock)
+
+	// Register two UEs and verify they get different AMF-UE-NGAP-IDs
+	body1, _ := json.Marshal(RegistrationRequest{SUPI: "imsi-1", RANUeNgapID: 1})
+	Handle(handler.Request{Body: body1, Method: "POST"})
+
+	mock2 := newMockSBI()
+	mock2.responses["ausf-authenticate"] = map[string]string{"auth_result": "SUCCESS", "kausf": "bb"}
+	mock2.responses["udm-get-subscriber-data"] = models.SubscriberData{SUPI: "imsi-2"}
+	SetSBI(mock2)
+
+	body2, _ := json.Marshal(RegistrationRequest{SUPI: "imsi-2", RANUeNgapID: 2})
+	Handle(handler.Request{Body: body2, Method: "POST"})
+
+	var ctx1, ctx2 models.UEContext
+	mockStore.Get(context.Background(), "ue:imsi-1", &ctx1)
+	mockStore.Get(context.Background(), "ue:imsi-2", &ctx2)
+
+	if ctx1.AMFUeNgapID == ctx2.AMFUeNgapID {
+		t.Errorf("AMF-UE-NGAP-IDs should be unique: %d vs %d", ctx1.AMFUeNgapID, ctx2.AMFUeNgapID)
 	}
 }

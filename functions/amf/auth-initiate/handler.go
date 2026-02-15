@@ -1,3 +1,12 @@
+// Package function implements the AMF Authentication Initiation handler.
+// Initiates the 5G-AKA authentication procedure per TS 33.501 Section 6.1.3.
+//
+// Call chain:
+//  1. AMF → UDM: Nudm_UEAuthentication_Get (TS 29.503) to generate auth vectors
+//  2. Store XRES* for later verification by AUSF
+//  3. Return authentication challenge (RAND, AUTN) to UE
+//
+// This maps to the Nausf_UEAuthentication service (TS 29.509 Section 6.1.3).
 package function
 
 import (
@@ -43,14 +52,15 @@ func init() {
 // AuthInitiateRequest is the JSON body for initiating authentication.
 type AuthInitiateRequest struct {
 	SUPI               string `json:"supi"`
-	ServingNetworkName string `json:"serving_network_name"`
+	ServingNetworkName string `json:"serving_network_name"` // TS 24.501 Section 9.11.3.36
 }
 
 // AuthInitiateResponse is the auth challenge returned to the UE.
+// Contains the 5G-AKA authentication vector (TS 33.501 Section 6.1.3.1).
 type AuthInitiateResponse struct {
-	AuthType string `json:"auth_type"`
-	RAND     string `json:"rand"`
-	AUTN     string `json:"autn"`
+	AuthType string `json:"auth_type"` // 5G_AKA or EAP_AKA
+	RAND     string `json:"rand"`      // Random challenge (hex)
+	AUTN     string `json:"autn"`      // Authentication token (hex)
 	SUPI     string `json:"supi"`
 }
 
@@ -62,13 +72,16 @@ type udmAuthDataResponse struct {
 	KAUSF    string `json:"kausf"`
 }
 
-// Handle initiates authentication by calling UDM to generate auth data.
+// Handle initiates 5G-AKA authentication per TS 33.501 Section 6.1.3.
+// Steps:
+//  1. Nudm_UEAuthentication_Get (TS 29.503): generate auth vectors from UDM
+//  2. Store XRES* for later verification (by ausf-authenticate)
+//  3. Return (RAND, AUTN) as authentication challenge to UE
 func Handle(req handler.Request) (handler.Response, error) {
 	ctx := req.Context()
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	_ = ctx // store not directly used in this handler's main path
 
 	var authReq AuthInitiateRequest
 	if err := json.Unmarshal(req.Body, &authReq); err != nil {
@@ -77,11 +90,12 @@ func Handle(req handler.Request) (handler.Response, error) {
 	if authReq.SUPI == "" {
 		return errorResp(http.StatusBadRequest, "supi is required"), nil
 	}
+	// Default serving network name per TS 24.501 Section 9.11.3.36
 	if authReq.ServingNetworkName == "" {
 		authReq.ServingNetworkName = "5G:mnc001.mcc001.3gppnetwork.org"
 	}
 
-	// Call UDM generate-auth-data
+	// Nudm_UEAuthentication_Get (TS 29.503): generate 5G-AKA auth vectors
 	var udmResp udmAuthDataResponse
 	if err := sbiClient.CallFunction("udm-generate-auth-data",
 		map[string]string{
@@ -89,10 +103,10 @@ func Handle(req handler.Request) (handler.Response, error) {
 			"serving_network_name": authReq.ServingNetworkName,
 		},
 		&udmResp); err != nil {
-		return errorResp(http.StatusInternalServerError, "udm-generate-auth-data: %s", err), nil
+		return errorResp(http.StatusInternalServerError, "Nudm_UEAuthentication_Get: %s", err), nil
 	}
 
-	// Store the expected XRES* for later verification (by ausf-authenticate)
+	// Store XRES* for later verification by ausf-authenticate (TS 33.501 Section 6.1.3.2)
 	if udmResp.XRESstar != "" {
 		storeKey := "auth-pending:" + authReq.SUPI
 		_ = store.Put(ctx, storeKey, map[string]string{
