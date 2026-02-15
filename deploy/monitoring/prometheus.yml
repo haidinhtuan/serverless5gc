@@ -1,0 +1,50 @@
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  # OpenFaaS gateway metrics
+  - job_name: 'openfaas'
+    static_configs:
+      - targets: ['VM1_IP:8080']
+    metrics_path: /metrics
+
+  # cAdvisor for container metrics (all VMs)
+  - job_name: 'cadvisor-serverless'
+    static_configs:
+      - targets: ['VM1_IP:8081']
+
+  - job_name: 'cadvisor-open5gs'
+    static_configs:
+      - targets: ['VM2_IP:8081']
+
+  - job_name: 'cadvisor-free5gc'
+    static_configs:
+      - targets: ['VM3_IP:8081']
+
+  # Node exporter for host-level metrics
+  - job_name: 'node-serverless'
+    static_configs:
+      - targets: ['VM1_IP:9100']
+
+  - job_name: 'node-open5gs'
+    static_configs:
+      - targets: ['VM2_IP:9100']
+
+  - job_name: 'node-free5gc'
+    static_configs:
+      - targets: ['VM3_IP:9100']
+
+  - job_name: 'node-loadgen'
+    static_configs:
+      - targets: ['VM4_IP:9100']
+
+  - job_name: 'node-monitoring'
+    static_configs:
+      - targets: ['VM5_IP:9100']
+
+  # Custom cost exporter
+  - job_name: 'cost-exporter'
+    static_configs:
+      - targets: ['VM5_IP:9200']
+    scrape_interval: 15s
