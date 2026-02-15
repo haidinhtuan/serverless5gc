@@ -18,6 +18,13 @@ Thumbs.db
 # Evaluation results (large data files)
 eval/results/
 
+# Claude Code config
+CLAUDE.md
+.claude/
+
+# IONOS provisioning (contains local paths)
+deploy/ionos/
+
 # Temporary
 tmp/
 *.tmp

@@ -1,7 +1,5 @@
 # Serverless 5G Core Implementation Plan
 
-> **For Claude:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task.
-
 **Goal:** Build a serverless 5G core (OpenFaaS, Go) and benchmark its cost efficiency against Open5GS and free5GC for an academic paper.
 
 **Architecture:** Function-per-Procedure pattern where each 3GPP procedure is an OpenFaaS function. ~20 Go functions share state via Redis (UE contexts) and etcd (NRF registry). An SCTP-HTTP proxy bridges the gNB SCTP interface to HTTP. UPF runs as a standard container (go-upf).
