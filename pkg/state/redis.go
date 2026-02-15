@@ -21,6 +21,11 @@ func NewRedisStore(addr string) *RedisStore {
 	}
 }
 
+// Put implements KVStore by storing the value with no expiration.
+func (r *RedisStore) Put(ctx context.Context, key string, value interface{}) error {
+	return r.Set(ctx, key, value, 0)
+}
+
 func (r *RedisStore) Set(ctx context.Context, key string, value interface{}, ttl time.Duration) error {
 	data, err := json.Marshal(value)
 	if err != nil {
