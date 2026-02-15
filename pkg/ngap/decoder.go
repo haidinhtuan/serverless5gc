@@ -26,11 +26,32 @@ const (
 	MessageTypeUnsuccessful = 2
 )
 
+// NGAP IE IDs from 3GPP TS 38.413 Section 9.3.
+const (
+	IEID_AMF_UE_NGAP_ID    = 10
+	IEID_RAN_UE_NGAP_ID    = 85
+	IEID_NAS_PDU           = 38
+	IEID_UserLocationInfo  = 121
+	IEID_RRCEstablishCause = 90
+	IEID_FiveG_S_TMSI      = 26
+)
+
 // MessageRoute maps an NGAP message to its target OpenFaaS function.
 type MessageRoute struct {
 	FunctionName  string
 	ProcedureCode int
 	MessageType   int
+}
+
+// NGAPContext carries extracted NGAP IE values alongside routing info.
+// These fields are populated by ParseNGAPMessage from the wire-format PDU
+// per TS 38.413 Section 9.2 (InitialUEMessage, UplinkNASTransport, etc.).
+type NGAPContext struct {
+	Route          MessageRoute
+	RANUeNgapID    int64  // TS 38.413 Section 9.3.3.2
+	AMFUeNgapID    int64  // TS 38.413 Section 9.3.3.1
+	NASPDU         []byte // TS 38.413 Section 9.3.3.5
+	UserLocationInfo []byte // TS 38.413 Section 9.3.1.16 (raw)
 }
 
 // routingTable maps (messageType, procedureCode) to an OpenFaaS function name.

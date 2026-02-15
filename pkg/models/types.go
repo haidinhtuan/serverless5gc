@@ -13,16 +13,23 @@ type UEContext struct {
 	AMFUeNgapID       int64            `json:"amf_ue_ngap_id"`
 	RANUeNgapID       int64            `json:"ran_ue_ngap_id"`
 	SecurityCtx       *SecurityContext `json:"security_ctx,omitempty"`
-	PDUSessions       []string         `json:"pdu_sessions"` // PDU session IDs
-	NSSAI             []SNSSAI         `json:"nssai"`
+	PDUSessions       []string         `json:"pdu_sessions"`        // PDU session IDs
+	NSSAI             []SNSSAI         `json:"nssai"`               // Requested NSSAI
+	AllowedNSSAI      []SNSSAI         `json:"allowed_nssai"`       // Allowed NSSAI from subscription (TS 23.501 Section 5.15.4)
+	T3512Value        uint32           `json:"t3512_value"`         // Periodic registration update timer in seconds (TS 24.501)
+	RegistrationTime  time.Time        `json:"registration_time"`   // When RM state became REGISTERED
 	LastActivity      time.Time        `json:"last_activity"`
 }
 
-// SecurityContext holds the UE's security parameters.
+// SecurityContext holds the UE's NAS security parameters (TS 33.501 Section 6.7).
 type SecurityContext struct {
-	KAMFKey    []byte `json:"kamf_key"`
-	NASCount   uint32 `json:"nas_count"`
-	AuthStatus string `json:"auth_status"` // AUTHENTICATED, PENDING
+	KAMFKey           []byte `json:"kamf_key"`
+	NASCount          uint32 `json:"nas_count"`
+	AuthStatus        string `json:"auth_status"`        // AUTHENTICATED, PENDING
+	NgKSI             uint8  `json:"ng_ksi"`              // NAS key set identifier (TS 24.501 Section 9.11.3.32)
+	SelectedCiphering uint8  `json:"selected_ciphering"`  // 5G-EA algorithm (TS 24.501 Section 9.11.3.34)
+	SelectedIntegrity uint8  `json:"selected_integrity"`  // 5G-IA algorithm (TS 24.501 Section 9.11.3.34)
+	SecurityActivated bool   `json:"security_activated"`  // true after Security Mode Complete
 }
 
 // SNSSAI represents a Single Network Slice Selection Assistance Information.
