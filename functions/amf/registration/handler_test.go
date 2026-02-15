@@ -3,6 +3,7 @@ package function
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"testing"
 
@@ -37,18 +38,16 @@ func (m *mockSBI) CallFunction(funcName string, payload interface{}, result inte
 	return nil
 }
 
-func TestHandle_Registration_Success(t *testing.T) {
+func setupSuccessMocks() (*state.MockKVStore, *mockSBI) {
 	mockStore := state.NewMockKVStore()
 	SetStore(mockStore)
 
 	mock := newMockSBI()
-	// Nausf_UEAuthentication (TS 29.509) returns SUCCESS
 	mock.responses["ausf-authenticate"] = map[string]string{
 		"auth_result": "SUCCESS",
 		"supi":        "imsi-001010000000001",
 		"kausf":       "aabbccdd",
 	}
-	// Nudm_SDM_Get (TS 29.503) returns subscriber data
 	mock.responses["udm-get-subscriber-data"] = models.SubscriberData{
 		SUPI: "imsi-001010000000001",
 		AccessAndMobility: &models.AccessMobData{
@@ -57,6 +56,11 @@ func TestHandle_Registration_Success(t *testing.T) {
 		},
 	}
 	SetSBI(mock)
+	return mockStore, mock
+}
+
+func TestHandle_Registration_Success(t *testing.T) {
+	mockStore, mock := setupSuccessMocks()
 
 	body, _ := json.Marshal(RegistrationRequest{
 		SUPI:        "imsi-001010000000001",
@@ -131,7 +135,7 @@ func TestHandle_Registration_Success(t *testing.T) {
 		t.Error("registration_time should not be zero")
 	}
 
-	// Verify 3GPP call chain order: AUSF → UDM(get) → UDM(register)
+	// Verify 3GPP call chain order: AUSF -> UDM(get) -> UDM(register)
 	expectedCalls := []string{"ausf-authenticate", "udm-get-subscriber-data", "udm-registration"}
 	if len(mock.calls) != len(expectedCalls) {
 		t.Fatalf("SBI calls = %v, want %v", mock.calls, expectedCalls)
@@ -143,9 +147,41 @@ func TestHandle_Registration_Success(t *testing.T) {
 	}
 }
 
-func TestHandle_Registration_AuthFailure_CauseIllegalUE(t *testing.T) {
-	mockStore := state.NewMockKVStore()
-	SetStore(mockStore)
+func TestHandle_Registration_Success_StateTransitionTimestamps(t *testing.T) {
+	mockStore, _ := setupSuccessMocks()
+
+	body, _ := json.Marshal(RegistrationRequest{
+		SUPI:        "imsi-001010000000001",
+		RANUeNgapID: 1,
+		GnbID:       "gnb-001",
+	})
+
+	resp, err := Handle(handler.Request{Body: body, Method: "POST"})
+	if err != nil {
+		t.Fatalf("Handle error: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+
+	var ueCtx models.UEContext
+	if err := mockStore.Get(context.Background(), "ue:imsi-001010000000001", &ueCtx); err != nil {
+		t.Fatalf("UE context not found: %v", err)
+	}
+
+	// State machine must set RegistrationTime (RM-DEREGISTERED -> RM-REGISTERED)
+	if ueCtx.RegistrationTime.IsZero() {
+		t.Error("RegistrationTime should be set by state machine transition")
+	}
+
+	// LastActivity should also be populated
+	if ueCtx.LastActivity.IsZero() {
+		t.Error("LastActivity should be set")
+	}
+}
+
+func TestHandle_Registration_AuthFailure_ProblemDetails(t *testing.T) {
+	SetStore(state.NewMockKVStore())
 
 	mock := newMockSBI()
 	mock.responses["ausf-authenticate"] = map[string]string{
@@ -163,15 +199,48 @@ func TestHandle_Registration_AuthFailure_CauseIllegalUE(t *testing.T) {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusForbidden)
 	}
 
-	// Verify NAS Registration Reject with Cause #3 is included
-	var result map[string]string
-	json.Unmarshal(resp.Body, &result)
-	if result["nas_message"] == "" {
-		t.Error("expected nas_message with Registration Reject in response")
+	// Error responses must use ProblemDetails format per TS 29.571
+	var pd models.ProblemDetails
+	if err := json.Unmarshal(resp.Body, &pd); err != nil {
+		t.Fatalf("response should be ProblemDetails JSON: %v", err)
+	}
+	if pd.Status != http.StatusForbidden {
+		t.Errorf("ProblemDetails.Status = %d, want %d", pd.Status, http.StatusForbidden)
+	}
+	if pd.Title != "Forbidden" {
+		t.Errorf("ProblemDetails.Title = %q, want %q", pd.Title, "Forbidden")
+	}
+	// Cause should reference the 5GMM cause (Cause #3: Illegal UE)
+	if pd.Cause != "ILLEGAL_UE" {
+		t.Errorf("ProblemDetails.Cause = %q, want %q", pd.Cause, "ILLEGAL_UE")
+	}
+	// Detail should include human-readable cause string
+	if pd.Detail == "" {
+		t.Error("ProblemDetails.Detail should not be empty")
 	}
 }
 
-func TestHandle_Registration_MissingSUPI_CauseUEIdentity(t *testing.T) {
+func TestHandle_Registration_AuthFailure_NASReject(t *testing.T) {
+	SetStore(state.NewMockKVStore())
+
+	mock := newMockSBI()
+	mock.responses["ausf-authenticate"] = map[string]string{
+		"auth_result": "FAILURE",
+		"supi":        "imsi-001010000000001",
+	}
+	SetSBI(mock)
+
+	body, _ := json.Marshal(RegistrationRequest{SUPI: "imsi-001010000000001"})
+	resp, _ := Handle(handler.Request{Body: body, Method: "POST"})
+
+	// Must still include NAS Registration Reject in response header
+	nasHex := resp.Header.Get("X-Nas-Message")
+	if nasHex == "" {
+		t.Error("expected X-NAS-Message header with Registration Reject")
+	}
+}
+
+func TestHandle_Registration_MissingSUPI_ProblemDetails(t *testing.T) {
 	SetStore(state.NewMockKVStore())
 	SetSBI(newMockSBI())
 
@@ -183,15 +252,26 @@ func TestHandle_Registration_MissingSUPI_CauseUEIdentity(t *testing.T) {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
 	}
 
-	// Verify NAS reject with Cause #9 (UE identity cannot be derived)
-	var result map[string]string
-	json.Unmarshal(resp.Body, &result)
-	if result["nas_message"] == "" {
-		t.Error("expected nas_message with Registration Reject in response")
+	// Error must be ProblemDetails
+	var pd models.ProblemDetails
+	if err := json.Unmarshal(resp.Body, &pd); err != nil {
+		t.Fatalf("response should be ProblemDetails JSON: %v", err)
+	}
+	if pd.Status != http.StatusBadRequest {
+		t.Errorf("ProblemDetails.Status = %d, want %d", pd.Status, http.StatusBadRequest)
+	}
+	if pd.Title != "Bad Request" {
+		t.Errorf("ProblemDetails.Title = %q, want %q", pd.Title, "Bad Request")
+	}
+
+	// Must include NAS reject header
+	nasHex := resp.Header.Get("X-Nas-Message")
+	if nasHex == "" {
+		t.Error("expected X-NAS-Message header with Registration Reject")
 	}
 }
 
-func TestHandle_Registration_InvalidJSON(t *testing.T) {
+func TestHandle_Registration_InvalidJSON_ProblemDetails(t *testing.T) {
 	SetStore(state.NewMockKVStore())
 	SetSBI(newMockSBI())
 
@@ -201,6 +281,17 @@ func TestHandle_Registration_InvalidJSON(t *testing.T) {
 	}
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusBadRequest)
+	}
+
+	var pd models.ProblemDetails
+	if err := json.Unmarshal(resp.Body, &pd); err != nil {
+		t.Fatalf("response should be ProblemDetails JSON: %v", err)
+	}
+	if pd.Status != http.StatusBadRequest {
+		t.Errorf("ProblemDetails.Status = %d, want %d", pd.Status, http.StatusBadRequest)
+	}
+	if pd.Title != "Bad Request" {
+		t.Errorf("ProblemDetails.Title = %q, want %q", pd.Title, "Bad Request")
 	}
 }
 
@@ -231,5 +322,33 @@ func TestHandle_Registration_AMFUeNgapIDUnique(t *testing.T) {
 
 	if ctx1.AMFUeNgapID == ctx2.AMFUeNgapID {
 		t.Errorf("AMF-UE-NGAP-IDs should be unique: %d vs %d", ctx1.AMFUeNgapID, ctx2.AMFUeNgapID)
+	}
+}
+
+func TestHandle_Registration_AUSFError_ProblemDetails(t *testing.T) {
+	SetStore(state.NewMockKVStore())
+
+	mock := newMockSBI()
+	mock.errors["ausf-authenticate"] = fmt.Errorf("connection refused")
+	SetSBI(mock)
+
+	body, _ := json.Marshal(RegistrationRequest{SUPI: "imsi-001010000000001"})
+	resp, err := Handle(handler.Request{Body: body, Method: "POST"})
+	if err != nil {
+		t.Fatalf("Handle error: %v", err)
+	}
+	if resp.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusInternalServerError)
+	}
+
+	var pd models.ProblemDetails
+	if err := json.Unmarshal(resp.Body, &pd); err != nil {
+		t.Fatalf("response should be ProblemDetails JSON: %v", err)
+	}
+	if pd.Status != http.StatusInternalServerError {
+		t.Errorf("ProblemDetails.Status = %d, want %d", pd.Status, http.StatusInternalServerError)
+	}
+	if pd.Title != "Internal Server Error" {
+		t.Errorf("ProblemDetails.Title = %q, want %q", pd.Title, "Internal Server Error")
 	}
 }

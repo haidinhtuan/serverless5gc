@@ -27,6 +27,7 @@ import (
 	"github.com/tdinh/serverless5gc/pkg/nas"
 	"github.com/tdinh/serverless5gc/pkg/sbi"
 	"github.com/tdinh/serverless5gc/pkg/state"
+	"github.com/tdinh/serverless5gc/pkg/statemachine"
 )
 
 // SBICaller abstracts inter-NF communication for testability.
@@ -63,12 +64,12 @@ func init() {
 // In production, the SCTP proxy decodes the NGAP InitialUEMessage
 // (TS 38.413 Section 9.2.5.1) and extracts these fields from the NAS PDU.
 type RegistrationRequest struct {
-	SUPI             string         `json:"supi"`
-	RANUeNgapID      int64          `json:"ran_ue_ngap_id"`
-	GnbID            string         `json:"gnb_id"`
-	RegistrationType uint8          `json:"registration_type,omitempty"` // TS 24.501 Table 9.11.3.7.1
+	SUPI             string          `json:"supi"`
+	RANUeNgapID      int64           `json:"ran_ue_ngap_id"`
+	GnbID            string          `json:"gnb_id"`
+	RegistrationType uint8           `json:"registration_type,omitempty"` // TS 24.501 Table 9.11.3.7.1
 	RequestedNSSAI   []models.SNSSAI `json:"requested_nssai,omitempty"`
-	UESecurityCap    *ueSecCap      `json:"ue_security_cap,omitempty"`
+	UESecurityCap    *ueSecCap       `json:"ue_security_cap,omitempty"`
 }
 
 type ueSecCap struct {
@@ -78,13 +79,13 @@ type ueSecCap struct {
 
 // RegistrationResponse is returned on successful registration.
 type RegistrationResponse struct {
-	Status           string          `json:"status"`
-	SUPI             string          `json:"supi"`
-	GUTI             string          `json:"guti"`
-	AllowedNSSAI     []models.SNSSAI `json:"allowed_nssai,omitempty"`
-	T3512Value       uint32          `json:"t3512_value"`
-	NASMessage       string          `json:"nas_message,omitempty"`       // hex-encoded NAS Registration Accept
-	SecurityActivated bool           `json:"security_activated"`
+	Status            string          `json:"status"`
+	SUPI              string          `json:"supi"`
+	GUTI              string          `json:"guti"`
+	AllowedNSSAI      []models.SNSSAI `json:"allowed_nssai,omitempty"`
+	T3512Value        uint32          `json:"t3512_value"`
+	NASMessage        string          `json:"nas_message,omitempty"`  // hex-encoded NAS Registration Accept
+	SecurityActivated bool            `json:"security_activated"`
 }
 
 // SBI response types following 3GPP service naming
@@ -108,21 +109,22 @@ func Handle(req handler.Request) (handler.Response, error) {
 
 	var regReq RegistrationRequest
 	if err := json.Unmarshal(req.Body, &regReq); err != nil {
-		// TS 24.501: UE identity cannot be derived from malformed request
 		rejectNAS := nas.EncodeRegistrationReject(&nas.RegistrationReject{
 			CauseCode: nas.CauseUEIdentityCannotBeDerived,
 		})
-		return errorRespWithNAS(http.StatusBadRequest,
-			hex.EncodeToString(rejectNAS),
-			"invalid JSON: %s", err), nil
+		return problemRespWithNAS(http.StatusBadRequest,
+			"UE_IDENTITY_CANNOT_BE_DERIVED",
+			fmt.Sprintf("invalid JSON: %s", err),
+			hex.EncodeToString(rejectNAS)), nil
 	}
 	if regReq.SUPI == "" {
 		rejectNAS := nas.EncodeRegistrationReject(&nas.RegistrationReject{
 			CauseCode: nas.CauseUEIdentityCannotBeDerived,
 		})
-		return errorRespWithNAS(http.StatusBadRequest,
-			hex.EncodeToString(rejectNAS),
-			"supi is required"), nil
+		return problemRespWithNAS(http.StatusBadRequest,
+			"UE_IDENTITY_CANNOT_BE_DERIVED",
+			"supi is required",
+			hex.EncodeToString(rejectNAS)), nil
 	}
 
 	// Default to initial registration (TS 24.501 Table 9.11.3.7.1)
@@ -133,26 +135,26 @@ func Handle(req handler.Request) (handler.Response, error) {
 	// Allocate AMF-UE-NGAP-ID (TS 38.413 Section 9.3.3.1)
 	amfUeNgapID := atomic.AddInt64(&amfUeNgapIDCounter, 1)
 
-	// Step 1: Nausf_UEAuthentication — Authenticate via AUSF (TS 29.509)
+	// Step 1: Nausf_UEAuthentication -- Authenticate via AUSF (TS 29.509)
 	var authResult authResponse
 	if err := sbiClient.CallFunction("ausf-authenticate",
 		map[string]string{"supi": regReq.SUPI, "res_star": ""},
 		&authResult); err != nil {
-		return errorResp(http.StatusInternalServerError, "Nausf_UEAuthentication: %s", err), nil
+		return problemResp(http.StatusInternalServerError,
+			"UPSTREAM_NF_FAILURE",
+			fmt.Sprintf("Nausf_UEAuthentication: %s", err)), nil
 	}
 	if authResult.AuthResult != "SUCCESS" {
-		// TS 24.501 Cause #3: Illegal UE (authentication failure)
 		rejectNAS := nas.EncodeRegistrationReject(&nas.RegistrationReject{
 			CauseCode: nas.CauseIllegalUE,
 		})
-		return errorRespWithNAS(http.StatusForbidden,
-			hex.EncodeToString(rejectNAS),
-			"authentication failed for %s", regReq.SUPI), nil
+		return problemRespWithNAS(http.StatusForbidden,
+			"ILLEGAL_UE",
+			fmt.Sprintf("authentication failed for %s: %s", regReq.SUPI, nas.CauseString(nas.CauseIllegalUE)),
+			hex.EncodeToString(rejectNAS)), nil
 	}
 
 	// Step 2: NAS Security Mode Command (TS 24.501 Section 8.2.25)
-	// Select NAS security algorithms based on UE capabilities and AMF policy.
-	// Default: 5G-EA2 (AES) for ciphering, 5G-IA2 (AES) for integrity (TS 33.501 Section 6.7.2).
 	selectedCiphering := uint8(nas.CipherAlg5GEA2)
 	selectedIntegrity := uint8(nas.IntegAlg5GIA2)
 	ngKSI := uint8(0)
@@ -171,40 +173,45 @@ func Handle(req handler.Request) (handler.Response, error) {
 		kamfKey, _ = hex.DecodeString(authResult.KAUSF)
 	}
 
-	// Step 3: Nudm_SDM_Get — Get subscriber data from UDM (TS 29.503)
+	// Step 3: Nudm_SDM_Get -- Get subscriber data from UDM (TS 29.503)
 	var subData models.SubscriberData
 	if err := sbiClient.CallFunction("udm-get-subscriber-data",
 		map[string]string{"supi": regReq.SUPI},
 		&subData); err != nil {
-		return errorResp(http.StatusInternalServerError, "Nudm_SDM_Get: %s", err), nil
+		return problemResp(http.StatusInternalServerError,
+			"UPSTREAM_NF_FAILURE",
+			fmt.Sprintf("Nudm_SDM_Get: %s", err)), nil
 	}
 
-	// Step 4: Nudm_UECM_Registration — Register AMF context at UDM (TS 29.503)
+	// Step 4: Nudm_UECM_Registration -- Register AMF context at UDM (TS 29.503)
 	sbiClient.CallFunction("udm-registration",
 		udmRegistrationReq{SUPI: regReq.SUPI, AMFInstanceID: "amf-001"},
 		nil) // Best-effort; non-critical for registration flow
 
-	// Step 5: Create UE context — RM-DEREGISTERED → RM-REGISTERED
+	// Step 5: Create UE context using state machine (TS 23.502 Section 4.2.2)
+	sm := statemachine.NewUEStateMachine(regReq.SUPI)
+	sm.TransitionRM(statemachine.RMRegistered)   // RM-DEREGISTERED -> RM-REGISTERED
+	sm.TransitionCM(statemachine.CMConnected)     // CM-IDLE -> CM-CONNECTED
+
 	var allowedNSSAI []models.SNSSAI
 	if subData.AccessAndMobility != nil {
 		allowedNSSAI = subData.AccessAndMobility.NSSAI
 	}
 
 	guti := fmt.Sprintf("5g-guti-%s", regReq.SUPI)
-	now := time.Now()
 	ueCtx := models.UEContext{
 		SUPI:              regReq.SUPI,
 		GUTI:              guti,
-		RegistrationState: "REGISTERED",     // RM-REGISTERED (TS 23.502 Section 4.2.2.2)
-		CmState:           "CONNECTED",      // CM-CONNECTED (NAS signaling active)
+		RegistrationState: sm.RMState.StoreValue(),
+		CmState:           sm.CMState.StoreValue(),
 		RANUeNgapID:       regReq.RANUeNgapID,
 		AMFUeNgapID:       amfUeNgapID,
 		GnbID:             regReq.GnbID,
 		NSSAI:             allowedNSSAI,
-		AllowedNSSAI:      allowedNSSAI,     // TS 23.501 Section 5.15.4
-		T3512Value:        nas.T3512Default, // 54 minutes (TS 24.501 Section 8.2.7.17)
-		RegistrationTime:  now,
-		LastActivity:      now,
+		AllowedNSSAI:      allowedNSSAI,
+		T3512Value:        nas.T3512Default,
+		RegistrationTime:  sm.RMStateChangedAt,
+		LastActivity:      time.Now(),
 		SecurityCtx: &models.SecurityContext{
 			KAMFKey:           kamfKey,
 			NgKSI:             ngKSI,
@@ -216,7 +223,9 @@ func Handle(req handler.Request) (handler.Response, error) {
 	}
 
 	if err := store.Put(ctx, "ue:"+regReq.SUPI, ueCtx); err != nil {
-		return errorResp(http.StatusInternalServerError, "store ue context: %s", err), nil
+		return problemResp(http.StatusInternalServerError,
+			"STORAGE_FAILURE",
+			fmt.Sprintf("store ue context: %s", err)), nil
 	}
 
 	// Step 6: Build NAS Registration Accept (TS 24.501 Section 8.2.7)
@@ -254,17 +263,28 @@ func Handle(req handler.Request) (handler.Response, error) {
 	}, nil
 }
 
-func errorResp(status int, format string, args ...interface{}) handler.Response {
-	msg := fmt.Sprintf(format, args...)
-	body, _ := json.Marshal(map[string]string{"error": msg})
-	return handler.Response{StatusCode: status, Body: body}
+// problemResp creates a ProblemDetails error response per TS 29.571/RFC 7807.
+func problemResp(status int, cause string, detail string) handler.Response {
+	pd := models.NewProblemDetails(status, cause, detail)
+	body, _ := json.Marshal(pd)
+	return handler.Response{
+		StatusCode: status,
+		Body:       body,
+		Header:     http.Header{"Content-Type": []string{"application/problem+json"}},
+	}
 }
 
-func errorRespWithNAS(status int, nasHex string, format string, args ...interface{}) handler.Response {
-	msg := fmt.Sprintf(format, args...)
-	body, _ := json.Marshal(map[string]string{
-		"error":       msg,
-		"nas_message": nasHex,
-	})
-	return handler.Response{StatusCode: status, Body: body}
+// problemRespWithNAS creates a ProblemDetails error response and includes
+// the NAS reject message in the X-NAS-Message header.
+func problemRespWithNAS(status int, cause string, detail string, nasHex string) handler.Response {
+	pd := models.NewProblemDetails(status, cause, detail)
+	body, _ := json.Marshal(pd)
+	hdr := make(http.Header)
+	hdr.Set("Content-Type", "application/problem+json")
+	hdr.Set("X-Nas-Message", nasHex)
+	return handler.Response{
+		StatusCode: status,
+		Body:       body,
+		Header:     hdr,
+	}
 }
