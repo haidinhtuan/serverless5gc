@@ -1,0 +1,54 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sctp-proxy
+  namespace: default
+  labels:
+    app: sctp-proxy
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sctp-proxy
+  template:
+    metadata:
+      labels:
+        app: sctp-proxy
+    spec:
+      containers:
+        - name: sctp-proxy
+          image: serverless5gc/sctp-proxy:latest
+          ports:
+            - containerPort: 38412
+              protocol: SCTP
+              name: ngap
+          env:
+            - name: OPENFAAS_GATEWAY
+              value: "http://gateway.openfaas:8080/function/"
+            - name: SCTP_LISTEN_ADDR
+              value: "0.0.0.0:38412"
+          resources:
+            requests:
+              cpu: 100m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sctp-proxy
+  namespace: default
+  labels:
+    app: sctp-proxy
+spec:
+  type: NodePort
+  selector:
+    app: sctp-proxy
+  ports:
+    - name: ngap
+      port: 38412
+      targetPort: 38412
+      nodePort: 38412
+      protocol: SCTP

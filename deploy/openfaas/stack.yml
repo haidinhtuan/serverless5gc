@@ -1,0 +1,177 @@
+version: 1.0
+provider:
+  name: openfaas
+  gateway: http://127.0.0.1:8080
+
+functions:
+  # NRF - Service Discovery
+  nrf-register:
+    lang: dockerfile
+    handler: ./functions/nrf/register
+    image: serverless5gc/nrf-register:latest
+    environment:
+      ETCD_ENDPOINT: etcd:2379
+
+  nrf-discover:
+    lang: dockerfile
+    handler: ./functions/nrf/discover
+    image: serverless5gc/nrf-discover:latest
+    environment:
+      ETCD_ENDPOINT: etcd:2379
+
+  nrf-status-notify:
+    lang: dockerfile
+    handler: ./functions/nrf/status-notify
+    image: serverless5gc/nrf-status-notify:latest
+    environment:
+      ETCD_ENDPOINT: etcd:2379
+
+  # AMF - Access & Mobility Management
+  amf-initial-registration:
+    lang: dockerfile
+    handler: ./functions/amf/registration
+    image: serverless5gc/amf-initial-registration:latest
+    environment:
+      REDIS_ADDR: redis:6379
+      ETCD_ENDPOINT: etcd:2379
+      OPENFAAS_GATEWAY: http://gateway.openfaas:8080/function
+
+  amf-deregistration:
+    lang: dockerfile
+    handler: ./functions/amf/deregistration
+    image: serverless5gc/amf-deregistration:latest
+    environment:
+      REDIS_ADDR: redis:6379
+      OPENFAAS_GATEWAY: http://gateway.openfaas:8080/function
+
+  amf-service-request:
+    lang: dockerfile
+    handler: ./functions/amf/service-request
+    image: serverless5gc/amf-service-request:latest
+    environment:
+      REDIS_ADDR: redis:6379
+      OPENFAAS_GATEWAY: http://gateway.openfaas:8080/function
+
+  amf-pdu-session-relay:
+    lang: dockerfile
+    handler: ./functions/amf/pdu-session-relay
+    image: serverless5gc/amf-pdu-session-relay:latest
+    environment:
+      REDIS_ADDR: redis:6379
+      OPENFAAS_GATEWAY: http://gateway.openfaas:8080/function
+
+  amf-handover:
+    lang: dockerfile
+    handler: ./functions/amf/handover
+    image: serverless5gc/amf-handover:latest
+    environment:
+      REDIS_ADDR: redis:6379
+      OPENFAAS_GATEWAY: http://gateway.openfaas:8080/function
+
+  amf-auth-initiate:
+    lang: dockerfile
+    handler: ./functions/amf/auth-initiate
+    image: serverless5gc/amf-auth-initiate:latest
+    environment:
+      REDIS_ADDR: redis:6379
+      OPENFAAS_GATEWAY: http://gateway.openfaas:8080/function
+
+  # SMF - Session Management
+  smf-pdu-session-create:
+    lang: dockerfile
+    handler: ./functions/smf/pdu-session-create
+    image: serverless5gc/smf-pdu-session-create:latest
+    environment:
+      REDIS_ADDR: redis:6379
+      UPF_PFCP_ADDR: upf:8805
+      OPENFAAS_GATEWAY: http://gateway.openfaas:8080/function
+
+  smf-pdu-session-update:
+    lang: dockerfile
+    handler: ./functions/smf/pdu-session-update
+    image: serverless5gc/smf-pdu-session-update:latest
+    environment:
+      REDIS_ADDR: redis:6379
+      UPF_PFCP_ADDR: upf:8805
+      OPENFAAS_GATEWAY: http://gateway.openfaas:8080/function
+
+  smf-pdu-session-release:
+    lang: dockerfile
+    handler: ./functions/smf/pdu-session-release
+    image: serverless5gc/smf-pdu-session-release:latest
+    environment:
+      REDIS_ADDR: redis:6379
+      UPF_PFCP_ADDR: upf:8805
+      OPENFAAS_GATEWAY: http://gateway.openfaas:8080/function
+
+  smf-n4-session-setup:
+    lang: dockerfile
+    handler: ./functions/smf/n4-session-setup
+    image: serverless5gc/smf-n4-session-setup:latest
+    environment:
+      REDIS_ADDR: redis:6379
+      UPF_PFCP_ADDR: upf:8805
+
+  # UDM - Unified Data Management
+  udm-generate-auth-data:
+    lang: dockerfile
+    handler: ./functions/udm/generate-auth-data
+    image: serverless5gc/udm-generate-auth-data:latest
+    environment:
+      REDIS_ADDR: redis:6379
+      OPENFAAS_GATEWAY: http://gateway.openfaas:8080/function
+
+  udm-get-subscriber-data:
+    lang: dockerfile
+    handler: ./functions/udm/get-subscriber-data
+    image: serverless5gc/udm-get-subscriber-data:latest
+    environment:
+      REDIS_ADDR: redis:6379
+      OPENFAAS_GATEWAY: http://gateway.openfaas:8080/function
+
+  # UDR - Unified Data Repository
+  udr-data-read:
+    lang: dockerfile
+    handler: ./functions/udr/data-read
+    image: serverless5gc/udr-data-read:latest
+    environment:
+      REDIS_ADDR: redis:6379
+
+  udr-data-write:
+    lang: dockerfile
+    handler: ./functions/udr/data-write
+    image: serverless5gc/udr-data-write:latest
+    environment:
+      REDIS_ADDR: redis:6379
+
+  # AUSF - Authentication Server Function
+  ausf-authenticate:
+    lang: dockerfile
+    handler: ./functions/ausf/authenticate
+    image: serverless5gc/ausf-authenticate:latest
+    environment:
+      REDIS_ADDR: redis:6379
+      OPENFAAS_GATEWAY: http://gateway.openfaas:8080/function
+
+  # PCF - Policy Control Function
+  pcf-policy-create:
+    lang: dockerfile
+    handler: ./functions/pcf/policy-create
+    image: serverless5gc/pcf-policy-create:latest
+    environment:
+      REDIS_ADDR: redis:6379
+
+  pcf-policy-get:
+    lang: dockerfile
+    handler: ./functions/pcf/policy-get
+    image: serverless5gc/pcf-policy-get:latest
+    environment:
+      REDIS_ADDR: redis:6379
+
+  # NSSF - Network Slice Selection Function
+  nssf-slice-select:
+    lang: dockerfile
+    handler: ./functions/nssf/slice-select
+    image: serverless5gc/nssf-slice-select:latest
+    environment:
+      REDIS_ADDR: redis:6379
