@@ -1,0 +1,23 @@
+logger:
+  level: info
+
+smf:
+  sbi:
+    server:
+      - address: 0.0.0.0
+        port: 7777
+    client:
+      scp:
+        - uri: http://scp:7777
+  pfcp:
+    server:
+      - address: 0.0.0.0
+    client:
+      upf:
+        - address: upf
+  subnet:
+    - addr: 10.45.0.0/16
+      dnn: internet
+  dns:
+    - 8.8.8.8
+    - 8.8.4.4

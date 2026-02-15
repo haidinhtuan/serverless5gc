@@ -1,0 +1,184 @@
+version: "3.8"
+
+services:
+  mongodb:
+    image: mongo:6.0
+    container_name: open5gs-mongodb
+    volumes:
+      - mongo_data:/data/db
+    networks:
+      open5gs:
+        aliases:
+          - mongodb
+
+  nrf:
+    image: gradiant/open5gs:2.7.0
+    container_name: open5gs-nrf
+    command: open5gs-nrfd
+    depends_on:
+      - mongodb
+    volumes:
+      - ./config/nrf.yaml:/etc/open5gs/nrf.yaml
+    networks:
+      open5gs:
+        aliases:
+          - nrf
+
+  scp:
+    image: gradiant/open5gs:2.7.0
+    container_name: open5gs-scp
+    command: open5gs-scpd
+    depends_on:
+      - nrf
+    volumes:
+      - ./config/scp.yaml:/etc/open5gs/scp.yaml
+    networks:
+      open5gs:
+        aliases:
+          - scp
+
+  amf:
+    image: gradiant/open5gs:2.7.0
+    container_name: open5gs-amf
+    command: open5gs-amfd
+    depends_on:
+      - nrf
+      - scp
+    ports:
+      - "38412:38412/sctp"
+    volumes:
+      - ./config/amf.yaml:/etc/open5gs/amf.yaml
+    networks:
+      open5gs:
+        aliases:
+          - amf
+
+  smf:
+    image: gradiant/open5gs:2.7.0
+    container_name: open5gs-smf
+    command: open5gs-smfd
+    depends_on:
+      - nrf
+      - scp
+    volumes:
+      - ./config/smf.yaml:/etc/open5gs/smf.yaml
+    networks:
+      open5gs:
+        aliases:
+          - smf
+
+  upf:
+    image: gradiant/open5gs:2.7.0
+    container_name: open5gs-upf
+    command: open5gs-upfd
+    privileged: true
+    depends_on:
+      - smf
+    volumes:
+      - ./config/upf.yaml:/etc/open5gs/upf.yaml
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun
+    sysctls:
+      - net.ipv4.ip_forward=1
+    networks:
+      open5gs:
+        aliases:
+          - upf
+
+  udm:
+    image: gradiant/open5gs:2.7.0
+    container_name: open5gs-udm
+    command: open5gs-udmd
+    depends_on:
+      - nrf
+      - scp
+    volumes:
+      - ./config/udm.yaml:/etc/open5gs/udm.yaml
+    networks:
+      open5gs:
+        aliases:
+          - udm
+
+  udr:
+    image: gradiant/open5gs:2.7.0
+    container_name: open5gs-udr
+    command: open5gs-udrd
+    depends_on:
+      - mongodb
+      - nrf
+      - scp
+    volumes:
+      - ./config/udr.yaml:/etc/open5gs/udr.yaml
+    networks:
+      open5gs:
+        aliases:
+          - udr
+
+  ausf:
+    image: gradiant/open5gs:2.7.0
+    container_name: open5gs-ausf
+    command: open5gs-ausfd
+    depends_on:
+      - nrf
+      - scp
+    volumes:
+      - ./config/ausf.yaml:/etc/open5gs/ausf.yaml
+    networks:
+      open5gs:
+        aliases:
+          - ausf
+
+  pcf:
+    image: gradiant/open5gs:2.7.0
+    container_name: open5gs-pcf
+    command: open5gs-pcfd
+    depends_on:
+      - mongodb
+      - nrf
+      - scp
+    volumes:
+      - ./config/pcf.yaml:/etc/open5gs/pcf.yaml
+    networks:
+      open5gs:
+        aliases:
+          - pcf
+
+  nssf:
+    image: gradiant/open5gs:2.7.0
+    container_name: open5gs-nssf
+    command: open5gs-nssfd
+    depends_on:
+      - nrf
+      - scp
+    volumes:
+      - ./config/nssf.yaml:/etc/open5gs/nssf.yaml
+    networks:
+      open5gs:
+        aliases:
+          - nssf
+
+  bsf:
+    image: gradiant/open5gs:2.7.0
+    container_name: open5gs-bsf
+    command: open5gs-bsfd
+    depends_on:
+      - nrf
+      - scp
+    volumes:
+      - ./config/bsf.yaml:/etc/open5gs/bsf.yaml
+    networks:
+      open5gs:
+        aliases:
+          - bsf
+
+networks:
+  open5gs:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.33.33.0/24
+
+volumes:
+  mongo_data:

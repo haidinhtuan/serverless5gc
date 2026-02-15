@@ -1,0 +1,34 @@
+info:
+  version: 1.0.2
+  description: NSSF initial local configuration
+
+configuration:
+  sbi:
+    scheme: http
+    registerIPv4: nssf
+    bindingIPv4: 0.0.0.0
+    port: 8000
+  serviceNameList:
+    - nnssf-nsselection
+    - nnssf-nssaiavailability
+  nrfUri: http://nrf:8000
+  supportedPlmnList:
+    - mcc: "001"
+      mnc: "01"
+  supportedNssaiInPlmnList:
+    - plmnId:
+        mcc: "001"
+        mnc: "01"
+      supportedSnssaiList:
+        - sst: 1
+          sd: "010203"
+  nsiList:
+    - snssai:
+        sst: 1
+        sd: "010203"
+      nsiInformationList:
+        - nrfId: http://nrf:8000/nnrf-nfm/v1/nf-instances
+          nsiId: 1
+
+logger:
+  level: info

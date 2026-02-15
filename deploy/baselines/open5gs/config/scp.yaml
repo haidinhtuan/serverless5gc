@@ -1,0 +1,11 @@
+logger:
+  level: info
+
+scp:
+  sbi:
+    server:
+      - address: 0.0.0.0
+        port: 7777
+    client:
+      nrf:
+        - uri: http://nrf:7777

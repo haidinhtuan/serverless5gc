@@ -1,0 +1,62 @@
+info:
+  version: 1.0.7
+  description: SMF initial local configuration
+
+configuration:
+  smfName: free5gc-smf
+  sbi:
+    scheme: http
+    registerIPv4: smf
+    bindingIPv4: 0.0.0.0
+    port: 8000
+  serviceNameList:
+    - nsmf-pdusession
+    - nsmf-event-exposure
+    - nsmf-oam
+  snssaiInfos:
+    - sNssai:
+        sst: 1
+        sd: "010203"
+      dnnInfos:
+        - dnn: internet
+  plmnList:
+    - mcc: "001"
+      mnc: "01"
+  pfcp:
+    listenAddr: 0.0.0.0
+    externalAddr: smf
+    nodeID: smf
+  userplaneInformation:
+    upNodes:
+      gNB1:
+        type: AN
+      UPF:
+        type: UPF
+        nodeID: upf
+        addr: upf
+        sNssaiUpfInfos:
+          - sNssai:
+              sst: 1
+              sd: "010203"
+            dnnUpfInfoList:
+              - dnn: internet
+                pools:
+                  - cidr: 10.60.0.0/16
+        interfaces:
+          - interfaceType: N3
+            endpoints:
+              - upf
+            networkInstances:
+              - internet
+    links:
+      - A: gNB1
+        B: UPF
+  nrfUri: http://nrf:8000
+  locality: area1
+  dns:
+    enable: true
+    ipv4: 8.8.8.8
+    ipv6: 2001:4860:4860::8888
+
+logger:
+  level: info

@@ -1,0 +1,11 @@
+logger:
+  level: info
+
+udm:
+  sbi:
+    server:
+      - address: 0.0.0.0
+        port: 7777
+    client:
+      scp:
+        - uri: http://scp:7777

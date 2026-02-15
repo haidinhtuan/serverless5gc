@@ -1,0 +1,168 @@
+version: "3.8"
+
+services:
+  db:
+    image: mongo:6.0
+    container_name: free5gc-mongodb
+    command: mongod --port 27017
+    volumes:
+      - db_data:/data/db
+    networks:
+      free5gc:
+        aliases:
+          - db
+
+  nrf:
+    image: free5gc/nrf:v3.4.1
+    container_name: free5gc-nrf
+    command: ./nrf -c ./config/nrfcfg.yaml
+    depends_on:
+      - db
+    volumes:
+      - ./config/nrfcfg.yaml:/free5gc/config/nrfcfg.yaml
+    environment:
+      DB_URI: mongodb://db/free5gc
+      GIN_MODE: release
+    networks:
+      free5gc:
+        aliases:
+          - nrf
+
+  amf:
+    image: free5gc/amf:v3.4.1
+    container_name: free5gc-amf
+    command: ./amf -c ./config/amfcfg.yaml
+    depends_on:
+      - nrf
+    ports:
+      - "38412:38412/sctp"
+    volumes:
+      - ./config/amfcfg.yaml:/free5gc/config/amfcfg.yaml
+    environment:
+      GIN_MODE: release
+    networks:
+      free5gc:
+        aliases:
+          - amf
+
+  smf:
+    image: free5gc/smf:v3.4.1
+    container_name: free5gc-smf
+    command: ./smf -c ./config/smfcfg.yaml
+    depends_on:
+      - nrf
+    volumes:
+      - ./config/smfcfg.yaml:/free5gc/config/smfcfg.yaml
+    environment:
+      GIN_MODE: release
+    networks:
+      free5gc:
+        aliases:
+          - smf
+
+  upf:
+    image: free5gc/upf:v3.4.1
+    container_name: free5gc-upf
+    command: ./upf -c ./config/upfcfg.yaml
+    depends_on:
+      - smf
+    volumes:
+      - ./config/upfcfg.yaml:/free5gc/config/upfcfg.yaml
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun
+    sysctls:
+      - net.ipv4.ip_forward=1
+    networks:
+      free5gc:
+        aliases:
+          - upf
+
+  udm:
+    image: free5gc/udm:v3.4.1
+    container_name: free5gc-udm
+    command: ./udm -c ./config/udmcfg.yaml
+    depends_on:
+      - nrf
+    volumes:
+      - ./config/udmcfg.yaml:/free5gc/config/udmcfg.yaml
+    environment:
+      GIN_MODE: release
+    networks:
+      free5gc:
+        aliases:
+          - udm
+
+  udr:
+    image: free5gc/udr:v3.4.1
+    container_name: free5gc-udr
+    command: ./udr -c ./config/udrcfg.yaml
+    depends_on:
+      - db
+      - nrf
+    volumes:
+      - ./config/udrcfg.yaml:/free5gc/config/udrcfg.yaml
+    environment:
+      DB_URI: mongodb://db/free5gc
+      GIN_MODE: release
+    networks:
+      free5gc:
+        aliases:
+          - udr
+
+  ausf:
+    image: free5gc/ausf:v3.4.1
+    container_name: free5gc-ausf
+    command: ./ausf -c ./config/ausfcfg.yaml
+    depends_on:
+      - nrf
+    volumes:
+      - ./config/ausfcfg.yaml:/free5gc/config/ausfcfg.yaml
+    environment:
+      GIN_MODE: release
+    networks:
+      free5gc:
+        aliases:
+          - ausf
+
+  pcf:
+    image: free5gc/pcf:v3.4.1
+    container_name: free5gc-pcf
+    command: ./pcf -c ./config/pcfcfg.yaml
+    depends_on:
+      - db
+      - nrf
+    volumes:
+      - ./config/pcfcfg.yaml:/free5gc/config/pcfcfg.yaml
+    environment:
+      GIN_MODE: release
+    networks:
+      free5gc:
+        aliases:
+          - pcf
+
+  nssf:
+    image: free5gc/nssf:v3.4.1
+    container_name: free5gc-nssf
+    command: ./nssf -c ./config/nssfcfg.yaml
+    depends_on:
+      - nrf
+    volumes:
+      - ./config/nssfcfg.yaml:/free5gc/config/nssfcfg.yaml
+    environment:
+      GIN_MODE: release
+    networks:
+      free5gc:
+        aliases:
+          - nssf
+
+networks:
+  free5gc:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 10.100.200.0/24
+
+volumes:
+  db_data:

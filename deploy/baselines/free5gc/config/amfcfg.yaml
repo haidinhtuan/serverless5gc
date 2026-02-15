@@ -1,0 +1,64 @@
+info:
+  version: 1.0.9
+  description: AMF initial local configuration
+
+configuration:
+  amfName: free5gc-amf
+  ngapIpList:
+    - 0.0.0.0
+  ngapPort: 38412
+  sbi:
+    scheme: http
+    registerIPv4: amf
+    bindingIPv4: 0.0.0.0
+    port: 8000
+  serviceNameList:
+    - namf-comm
+    - namf-evts
+    - namf-mt
+    - namf-loc
+    - namf-oam
+  servedGuamiList:
+    - plmnId:
+        mcc: "001"
+        mnc: "01"
+      amfId: "cafe00"
+  supportTaiList:
+    - plmnId:
+        mcc: "001"
+        mnc: "01"
+      tac: "000001"
+  plmnSupportList:
+    - plmnId:
+        mcc: "001"
+        mnc: "01"
+      snssaiList:
+        - sst: 1
+          sd: "010203"
+  supportDnnList:
+    - internet
+  nrfUri: http://nrf:8000
+  security:
+    integrityOrder:
+      - NIA2
+    cipheringOrder:
+      - NEA0
+  networkName:
+    full: Serverless5GC Test
+    short: S5GC
+  networkFeatureSupport5GS:
+    enable: true
+    length: 1
+    imsVoPS: 0
+    emc: 0
+    emf: 0
+    iwkN26: 0
+    mpsi: 0
+    emcN3: 0
+    mcsi: 0
+  t3502Value: 720
+  t3512Value: 3600
+  non3gppDeregistrationTimerValue: 3240
+
+logger:
+  level: info

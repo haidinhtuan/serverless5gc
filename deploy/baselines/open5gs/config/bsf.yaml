@@ -1,0 +1,12 @@
+logger:
+  level: info
+
+bsf:
+  sbi:
+    server:
+      - address: 0.0.0.0
+        port: 7777
+    client:
+      scp:
+        - uri: http://scp:7777
+  db_uri: mongodb://mongodb/open5gs

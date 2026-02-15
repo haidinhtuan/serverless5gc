@@ -1,0 +1,13 @@
+logger:
+  level: info
+
+upf:
+  pfcp:
+    server:
+      - address: 0.0.0.0
+  gtpu:
+    server:
+      - address: 0.0.0.0
+  subnet:
+    - addr: 10.45.0.0/16
+      dnn: internet
