@@ -1,6 +1,4 @@
-FROM golang:1.22-alpine AS builder
-
-RUN apk --no-cache add git
+FROM golang:1.25-alpine AS builder
 
 WORKDIR /go/src/app
 
@@ -11,9 +9,9 @@ RUN go mod download
 # Copy entire project (needed for shared packages)
 COPY . .
 
-# Build the function handler
-ARG FUNCTION_PATH
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /handler ${FUNCTION_PATH}
+# Build the function: the build script generates cmd/entry/main.go
+# with the correct import path before invoking docker build.
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /handler ./cmd/entry/
 
 FROM alpine:3.19
 
@@ -24,7 +22,6 @@ USER app
 
 COPY --from=builder /handler /handler
 
-ENV fprocess="/handler"
 EXPOSE 8080
 
 HEALTHCHECK --interval=5s CMD [ -e /tmp/.lock ] || exit 1

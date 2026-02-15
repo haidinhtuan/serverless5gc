@@ -21,6 +21,7 @@ import (
 	amfDeregistration "github.com/tdinh/serverless5gc/functions/amf/deregistration"
 	amfServiceRequest "github.com/tdinh/serverless5gc/functions/amf/service-request"
 	amfPduSessionRelay "github.com/tdinh/serverless5gc/functions/amf/pdu-session-relay"
+	amfHandover        "github.com/tdinh/serverless5gc/functions/amf/handover"
 	amfAuthInitiate   "github.com/tdinh/serverless5gc/functions/amf/auth-initiate"
 
 	// SMF functions (redis-backed)
@@ -126,6 +127,8 @@ func main() {
 	amfPduSessionRelay.SetStore(redisStore)
 	amfPduSessionRelay.SetSBI(sbiClient)
 
+	amfHandover.SetStore(redisStore)
+
 	amfAuthInitiate.SetStore(redisStore)
 	amfAuthInitiate.SetSBI(sbiClient)
 
@@ -177,6 +180,7 @@ func main() {
 	mux.HandleFunc("/function/amf-deregistration", wrapHandler(amfDeregistration.Handle))
 	mux.HandleFunc("/function/amf-service-request", wrapHandler(amfServiceRequest.Handle))
 	mux.HandleFunc("/function/amf-pdu-session-relay", wrapHandler(amfPduSessionRelay.Handle))
+	mux.HandleFunc("/function/amf-handover", wrapHandler(amfHandover.Handle))
 	mux.HandleFunc("/function/amf-auth-initiate", wrapHandler(amfAuthInitiate.Handle))
 
 	// SMF
@@ -206,7 +210,7 @@ func main() {
 	addr := ":8080"
 	log.Printf("Test gateway listening on %s", addr)
 	log.Printf("Redis: %s | etcd: %s", redisAddr, etcdEndpoint)
-	log.Printf("Registered 20 function handlers")
+	log.Printf("Registered 21 function handlers")
 	if err := http.ListenAndServe(addr, mux); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}
