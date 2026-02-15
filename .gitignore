@@ -22,6 +22,9 @@ eval/results/
 CLAUDE.md
 .claude/
 
+# Internal docs (design plans, implementation notes)
+docs/
+
 # IONOS provisioning (contains local paths)
 deploy/ionos/
 
