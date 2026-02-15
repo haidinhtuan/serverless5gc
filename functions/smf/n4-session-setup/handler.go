@@ -1,3 +1,5 @@
+// Package function implements PFCP session establishment on the N4 interface
+// per 3GPP TS 29.244 Section 7.5.2.
 package function
 
 import (
@@ -37,20 +39,21 @@ func init() {
 	Store = state.NewRedisStore(addr)
 }
 
-// N4SetupRequest contains parameters for PFCP session establishment.
+// N4SetupRequest contains parameters for PFCP Session Establishment (TS 29.244 Section 7.5.2).
 type N4SetupRequest struct {
 	SEID uint64 `json:"seid"`
 	UEIP string `json:"ue_ip"`
 	TEID uint32 `json:"teid"`
 }
 
-// N4SetupResponse is returned after successful PFCP session setup.
+// N4SetupResponse is returned after successful PFCP session setup on the N4 interface.
 type N4SetupResponse struct {
 	SEID   uint64 `json:"seid"`
 	Status string `json:"status"`
 }
 
-// Handle is an internal helper that establishes a PFCP session with the UPF.
+// Handle establishes a PFCP session with the UPF over N4 (TS 29.244 Section 7.5.2).
+// Sends a Session Establishment Request containing PDR, FAR, QER, and URR IEs.
 func Handle(req handler.Request) (handler.Response, error) {
 	ctx := req.Context()
 	if ctx == nil {

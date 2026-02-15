@@ -1,3 +1,5 @@
+// Package function implements Npcf_SMPolicyControl_Create per 3GPP TS 29.512
+// and TS 23.502 Section 4.16.4.
 package function
 
 import (
@@ -28,37 +30,50 @@ func init() {
 	Store = state.NewRedisStore(addr)
 }
 
-// PolicyCreateRequest contains the parameters for policy creation.
+// PolicyCreateRequest per TS 29.512 Section 5.6.2.1 (SmPolicyContextData).
 type PolicyCreateRequest struct {
-	SUPI   string       `json:"supi"`
+	SUPI   string        `json:"supi"`
 	SNSSAI models.SNSSAI `json:"snssai"`
-	DNN    string       `json:"dnn"`
+	DNN    string        `json:"dnn"`
 }
 
-// PolicyDecision represents a QoS policy returned by the PCF.
+// PolicyDecision per TS 29.512 Section 5.6.2.2 (SmPolicyDecision).
 type PolicyDecision struct {
-	PolicyID string `json:"policy_id"`
-	QFI      uint8  `json:"qfi"`
-	AMBRUL   uint64 `json:"ambr_ul"`
-	AMBRDL   uint64 `json:"ambr_dl"`
-	FiveQI   int    `json:"5qi"`
+	PolicyID  string                `json:"policy_id"`
+	QFI       uint8                 `json:"qfi"`
+	AMBRUL    uint64                `json:"ambr_ul"`
+	AMBRDL    uint64                `json:"ambr_dl"`
+	FiveQI    int                   `json:"5qi"`
+	SessRules map[string]SessionRule `json:"sess_rules,omitempty"`
 }
 
-// Default QoS profiles per slice type.
+// SessionRule per TS 29.512 Section 5.6.2.7.
+type SessionRule struct {
+	SessionAMBR *AMBR `json:"sess_ambr,omitempty"`
+	DefQFI      uint8 `json:"def_qos_flow_indication,omitempty"`
+}
+
+// AMBR per TS 29.571.
+type AMBR struct {
+	Uplink   uint64 `json:"uplink"`
+	Downlink uint64 `json:"downlink"`
+}
+
+// Default QoS profiles per slice type (TS 23.501 Section 5.7).
 var defaultPolicies = map[int32]PolicyDecision{
-	1: { // eMBB
-		QFI:    9,
+	1: { // eMBB: 5QI=9 (best effort internet), QFI=1 (default flow)
+		QFI:    1,
 		AMBRUL: 1000000,  // 1 Mbps
 		AMBRDL: 5000000,  // 5 Mbps
 		FiveQI: 9,
 	},
-	2: { // URLLC
+	2: { // URLLC: 5QI=7 (voice/video), low latency
 		QFI:    7,
 		AMBRUL: 500000,   // 500 kbps
 		AMBRDL: 500000,
 		FiveQI: 7,
 	},
-	3: { // mMTC
+	3: { // mMTC: 5QI=9, low throughput for IoT
 		QFI:    9,
 		AMBRUL: 100000,   // 100 kbps
 		AMBRDL: 100000,
@@ -68,8 +83,8 @@ var defaultPolicies = map[int32]PolicyDecision{
 
 var policyCounter uint64
 
-// Handle returns a QoS policy for the given SNSSAI/DNN combination.
-// It first checks the store for a configured policy, then falls back to defaults.
+// Handle processes Npcf_SMPolicyControl_Create (TS 29.512 Section 5.6.2).
+// Returns an SmPolicyDecision containing session rules and default QoS parameters.
 func Handle(req handler.Request) (handler.Response, error) {
 	ctx := req.Context()
 	if ctx == nil {
@@ -99,7 +114,15 @@ func Handle(req handler.Request) (handler.Response, error) {
 	policyCounter++
 	policy.PolicyID = fmt.Sprintf("pol-%s-%d", pcfReq.SUPI, policyCounter)
 
-	// Store the created policy
+	// Build session rules per TS 29.512 Section 5.6.2.7
+	policy.SessRules = map[string]SessionRule{
+		"sr-1": {
+			SessionAMBR: &AMBR{Uplink: policy.AMBRUL, Downlink: policy.AMBRDL},
+			DefQFI:      policy.QFI,
+		},
+	}
+
+	// Store the created policy for Npcf_SMPolicyControl_Get (TS 29.512)
 	storedKey := "active-policies/" + policy.PolicyID
 	Store.Put(ctx, storedKey, policy)
 

@@ -50,12 +50,14 @@ func setup(t *testing.T) (*state.MockKVStore, *mockSBI, *mockPFCP) {
 	ResetIPPool()
 	store := state.NewMockKVStore()
 	SetStore(store)
+	// PCF returns SmPolicyDecision per TS 29.512
 	sbi := &mockSBI{resp: map[string]interface{}{
-		"pcf-policy-create": PolicyCreateResponse{
+		"pcf-policy-create": SmPolicyDecision{
 			PolicyID: "pol-1",
-			QFI:      9,
-			AMBRUL:   1000000,
-			AMBRDL:   5000000,
+			QFI:      1,       // TS 23.501 Section 5.7: default QoS flow
+			AMBRUL:   1000000, // 1 Mbps
+			AMBRDL:   5000000, // 5 Mbps
+			FiveQI:   9,       // best effort internet
 		},
 	}}
 	SetSBI(sbi)
@@ -95,8 +97,15 @@ func TestHandle_CreatePDUSession(t *testing.T) {
 	if smResp.State != "ACTIVE" {
 		t.Errorf("State = %s, want ACTIVE", smResp.State)
 	}
+	// TS 23.501 Section 5.7: default QFI=1 for best effort
+	if smResp.QFI != 1 {
+		t.Errorf("QFI = %d, want 1 (default QoS flow)", smResp.QFI)
+	}
+	if smResp.DNN != "internet" {
+		t.Errorf("DNN = %s, want internet", smResp.DNN)
+	}
 
-	// Verify PCF was called
+	// Verify PCF was called (Npcf_SMPolicyControl_Create, TS 29.512)
 	if len(sbi.calls) != 1 {
 		t.Fatalf("expected 1 SBI call, got %d", len(sbi.calls))
 	}
@@ -104,7 +113,7 @@ func TestHandle_CreatePDUSession(t *testing.T) {
 		t.Errorf("SBI call = %s, want pcf-policy-create", sbi.calls[0].FuncName)
 	}
 
-	// Verify PFCP session was established
+	// Verify PFCP session was established (N4, TS 29.244)
 	if len(pfcpMock.sessions) != 1 {
 		t.Fatalf("expected 1 PFCP session, got %d", len(pfcpMock.sessions))
 	}
@@ -123,12 +132,15 @@ func TestHandle_CreatePDUSession(t *testing.T) {
 	if stored.State != "ACTIVE" {
 		t.Errorf("stored State = %s, want ACTIVE", stored.State)
 	}
-	if stored.QFI != 9 {
-		t.Errorf("stored QFI = %d, want 9", stored.QFI)
+
+	// Verify IP was recorded in Redis pool
+	var allocatedIP string
+	if err := store.Get(context.Background(), "ip-pool/allocated/10.45.0.1", &allocatedIP); err != nil {
+		t.Fatal("allocated IP not tracked in Redis")
 	}
 }
 
-func TestHandle_CreatePDUSession_MultipleAllocations(t *testing.T) {
+func TestHandle_CreatePDUSession_NoDuplicateIPs(t *testing.T) {
 	setup(t)
 
 	seen := make(map[string]bool)
@@ -143,6 +155,9 @@ func TestHandle_CreatePDUSession_MultipleAllocations(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Handle[%d] error: %v", i, err)
 		}
+		if resp.StatusCode != http.StatusCreated {
+			t.Fatalf("Handle[%d] status %d; body: %s", i, resp.StatusCode, resp.Body)
+		}
 
 		var smResp CreateSMContextResponse
 		json.Unmarshal(resp.Body, &smResp)
@@ -153,6 +168,38 @@ func TestHandle_CreatePDUSession_MultipleAllocations(t *testing.T) {
 	}
 	if len(seen) != 3 {
 		t.Errorf("expected 3 unique IPs, got %d", len(seen))
+	}
+}
+
+func TestHandle_CreatePDUSession_SubscriptionAMBROverride(t *testing.T) {
+	store, _, _ := setup(t)
+
+	body, _ := json.Marshal(CreateSMContextRequest{
+		SUPI:          "imsi-001010000000001",
+		SNSSAI:        models.SNSSAI{SST: 1, SD: "010203"},
+		DNN:           "internet",
+		SessionAMBRUL: 9999999,
+		SessionAMBRDL: 8888888,
+	})
+
+	req := handler.Request{Method: "POST", Body: body}
+	resp, _ := Handle(req)
+
+	var smResp CreateSMContextResponse
+	json.Unmarshal(resp.Body, &smResp)
+
+	if smResp.AMBRUL != 9999999 {
+		t.Errorf("AMBRUL = %d, want 9999999 (subscription override)", smResp.AMBRUL)
+	}
+	if smResp.AMBRDL != 8888888 {
+		t.Errorf("AMBRDL = %d, want 8888888 (subscription override)", smResp.AMBRDL)
+	}
+
+	// Verify stored values match
+	var stored models.PDUSession
+	store.Get(context.Background(), "pdu-sessions/"+smResp.SessionID, &stored)
+	if stored.AMBRUL != 9999999 {
+		t.Errorf("stored AMBRUL = %d, want 9999999", stored.AMBRUL)
 	}
 }
 
@@ -208,5 +255,8 @@ func TestHandle_CreatePDUSession_DefaultDNN(t *testing.T) {
 	store.Get(context.Background(), "pdu-sessions/"+smResp.SessionID, &stored)
 	if stored.DNN != "internet" {
 		t.Errorf("default DNN = %s, want internet", stored.DNN)
+	}
+	if stored.PDUType != "IPv4" {
+		t.Errorf("default PDUType = %s, want IPv4", stored.PDUType)
 	}
 }

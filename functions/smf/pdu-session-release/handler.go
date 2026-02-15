@@ -1,3 +1,5 @@
+// Package function implements the SMF Nsmf_PDUSession_ReleaseSMContext service operation
+// per 3GPP TS 29.502 and TS 23.502 Section 4.3.4.
 package function
 
 import (
@@ -38,12 +40,16 @@ func init() {
 	Store = state.NewRedisStore(addr)
 }
 
-// ReleaseSMContextRequest is the input for session release.
+// ReleaseSMContextRequest per TS 29.502 (Nsmf_PDUSession_ReleaseSMContext).
 type ReleaseSMContextRequest struct {
 	SessionID string `json:"session_id"`
 }
 
-// Handle releases a PDU session: sends PFCP deletion and removes from store.
+// Handle releases a PDU session per TS 23.502 Section 4.3.4:
+//  1. Fetch session from store
+//  2. Send PFCP Session Deletion to UPF (N4, TS 29.244 Section 7.5.6)
+//  3. Release UE IP address back to pool
+//  4. Remove session from store
 func Handle(req handler.Request) (handler.Response, error) {
 	ctx := req.Context()
 	if ctx == nil {
@@ -58,7 +64,7 @@ func Handle(req handler.Request) (handler.Response, error) {
 		return errorResp(http.StatusBadRequest, "session_id is required"), nil
 	}
 
-	// Fetch existing session to verify it exists
+	// Step 1: Fetch existing session
 	key := "pdu-sessions/" + relReq.SessionID
 	var session models.PDUSession
 	if err := Store.Get(ctx, key, &session); err != nil {
@@ -68,15 +74,20 @@ func Handle(req handler.Request) (handler.Response, error) {
 		return errorResp(http.StatusInternalServerError, "get session: %s", err), nil
 	}
 
-	// Send PFCP Session Deletion to UPF
+	// Step 2: Send PFCP Session Deletion to UPF (N4, TS 29.244 Section 7.5.6)
 	if PFCP != nil {
 		seid := extractSEID(relReq.SessionID)
 		if err := PFCP.DeleteSession(seid); err != nil {
-			return errorResp(http.StatusInternalServerError, "pfcp delete: %s", err), nil
+			return errorResp(http.StatusInternalServerError, "N4 Session Deletion: %s", err), nil
 		}
 	}
 
-	// Remove session from store
+	// Step 3: Release UE IP address back to pool
+	if session.UEAddress != "" {
+		Store.Delete(ctx, "ip-pool/allocated/"+session.UEAddress)
+	}
+
+	// Step 4: Remove session from store
 	if err := Store.Delete(ctx, key); err != nil {
 		return errorResp(http.StatusInternalServerError, "delete session: %s", err), nil
 	}

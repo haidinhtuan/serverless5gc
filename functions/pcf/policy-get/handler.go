@@ -1,3 +1,4 @@
+// Package function implements Npcf_SMPolicyControl_Get per 3GPP TS 29.512.
 package function
 
 import (
@@ -29,7 +30,7 @@ func init() {
 	Store = state.NewRedisStore(addr)
 }
 
-// PolicyDecision represents a QoS policy.
+// PolicyDecision per TS 29.512 Section 5.6.2.2 (SmPolicyDecision).
 type PolicyDecision struct {
 	PolicyID string `json:"policy_id"`
 	QFI      uint8  `json:"qfi"`
@@ -38,7 +39,7 @@ type PolicyDecision struct {
 	FiveQI   int    `json:"5qi"`
 }
 
-// Handle retrieves an existing policy by ID.
+// Handle retrieves an existing SM policy by ID (Npcf_SMPolicyControl_Get, TS 29.512).
 func Handle(req handler.Request) (handler.Response, error) {
 	ctx := req.Context()
 	if ctx == nil {

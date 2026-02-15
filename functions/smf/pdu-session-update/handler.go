@@ -1,3 +1,5 @@
+// Package function implements the SMF Nsmf_PDUSession_UpdateSMContext service operation
+// per 3GPP TS 29.502 and TS 23.502 Section 4.3.3.
 package function
 
 import (
@@ -39,7 +41,7 @@ func init() {
 	Store = state.NewRedisStore(addr)
 }
 
-// UpdateSMContextRequest is the input for session modification.
+// UpdateSMContextRequest per TS 29.502 Section 6.1.6.2.6 (Nsmf_PDUSession_UpdateSMContext).
 type UpdateSMContextRequest struct {
 	SessionID string `json:"session_id"`
 	AMBRUL    uint64 `json:"ambr_ul,omitempty"`
@@ -47,7 +49,12 @@ type UpdateSMContextRequest struct {
 	QFI       uint8  `json:"qfi,omitempty"`
 }
 
-// Handle modifies a PDU session's QoS and sends PFCP Session Modification.
+// Handle processes Nsmf_PDUSession_UpdateSMContext (TS 29.502 Section 6.1.6.2.6).
+// Follows the PDU Session Modification procedure per TS 23.502 Section 4.3.3:
+//  1. Fetch existing session from store
+//  2. Apply QoS updates (Session-AMBR, QFI)
+//  3. Send PFCP Session Modification to UPF (N4, TS 29.244 Section 7.5.4)
+//  4. Update session in store
 func Handle(req handler.Request) (handler.Response, error) {
 	ctx := req.Context()
 	if ctx == nil {
@@ -62,7 +69,7 @@ func Handle(req handler.Request) (handler.Response, error) {
 		return errorResp(http.StatusBadRequest, "session_id is required"), nil
 	}
 
-	// Fetch existing session
+	// Step 1: Fetch existing session
 	key := "pdu-sessions/" + updateReq.SessionID
 	var session models.PDUSession
 	if err := Store.Get(ctx, key, &session); err != nil {
@@ -72,7 +79,7 @@ func Handle(req handler.Request) (handler.Response, error) {
 		return errorResp(http.StatusInternalServerError, "get session: %s", err), nil
 	}
 
-	// Apply updates
+	// Step 2: Apply QoS updates (Session-AMBR per TS 23.501 Section 5.7.2)
 	if updateReq.AMBRUL > 0 {
 		session.AMBRUL = updateReq.AMBRUL
 	}
@@ -83,7 +90,7 @@ func Handle(req handler.Request) (handler.Response, error) {
 		session.QFI = updateReq.QFI
 	}
 
-	// Send PFCP Session Modification to UPF
+	// Step 3: Send PFCP Session Modification to UPF (N4, TS 29.244 Section 7.5.4)
 	if PFCP != nil {
 		params := pfcp.ModifyParams{
 			AMBRUL: session.AMBRUL,
@@ -97,7 +104,7 @@ func Handle(req handler.Request) (handler.Response, error) {
 		}
 	}
 
-	// Update session in store
+	// Step 4: Update session in store
 	if err := Store.Put(ctx, key, session); err != nil {
 		return errorResp(http.StatusInternalServerError, "update session: %s", err), nil
 	}

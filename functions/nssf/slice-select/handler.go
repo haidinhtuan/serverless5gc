@@ -1,3 +1,5 @@
+// Package function implements Nnssf_NSSelection per 3GPP TS 29.531
+// and TS 23.502 Section 4.3.2 (network slice selection during registration).
 package function
 
 import (
@@ -28,8 +30,8 @@ func init() {
 	Store = state.NewRedisStore(addr)
 }
 
-// ConfiguredSlices holds the slices configured on this network.
-// Loaded from store or defaults.
+// ConfiguredSlices holds the S-NSSAI values configured on this network
+// per TS 23.501 Section 5.15.2.
 var ConfiguredSlices = []models.SNSSAI{
 	{SST: 1, SD: "010203"}, // eMBB
 	{SST: 1, SD: "112233"}, // eMBB variant
@@ -37,19 +39,20 @@ var ConfiguredSlices = []models.SNSSAI{
 	{SST: 3, SD: "010203"}, // mMTC
 }
 
-// SliceSelectRequest is the input for NSSF slice selection.
+// SliceSelectRequest per TS 29.531 Section 6.1.6.2.3 (Nnssf_NSSelection).
 type SliceSelectRequest struct {
 	RequestedNSSAI []models.SNSSAI `json:"requested_nssai"`
 	PLMN           models.PlmnID   `json:"plmn,omitempty"`
 }
 
-// SliceSelectResponse contains the allowed NSSAI after selection.
+// SliceSelectResponse per TS 29.531 Section 6.1.6.2.3 (AuthorizedNetworkSliceInfo).
 type SliceSelectResponse struct {
 	AllowedNSSAI  []models.SNSSAI `json:"allowed_nssai"`
 	RejectedNSSAI []models.SNSSAI `json:"rejected_nssai,omitempty"`
 }
 
-// Handle matches requested NSSAI against configured slices and returns allowed NSSAI.
+// Handle processes Nnssf_NSSelection (TS 29.531) to determine Allowed NSSAI
+// from Requested NSSAI per TS 23.502 Section 4.3.2.
 func Handle(req handler.Request) (handler.Response, error) {
 	ctx := req.Context()
 	if ctx == nil {

@@ -43,14 +43,33 @@ func TestHandle_PolicyCreate_DefaultEMBB(t *testing.T) {
 	if policy.PolicyID == "" {
 		t.Error("PolicyID should not be empty")
 	}
-	if policy.QFI != 9 {
-		t.Errorf("QFI = %d, want 9 (eMBB default)", policy.QFI)
+	// TS 23.501 Section 5.7: QFI=1 is the default QoS flow for eMBB
+	if policy.QFI != 1 {
+		t.Errorf("QFI = %d, want 1 (default QoS flow)", policy.QFI)
 	}
 	if policy.AMBRUL != 1000000 {
 		t.Errorf("AMBRUL = %d, want 1000000", policy.AMBRUL)
 	}
 	if policy.AMBRDL != 5000000 {
 		t.Errorf("AMBRDL = %d, want 5000000", policy.AMBRDL)
+	}
+
+	// TS 29.512 Section 5.6.2.7: Verify session rules are included
+	if len(policy.SessRules) == 0 {
+		t.Fatal("SessRules should not be empty")
+	}
+	sr, ok := policy.SessRules["sr-1"]
+	if !ok {
+		t.Fatal("SessRules missing sr-1")
+	}
+	if sr.SessionAMBR == nil {
+		t.Fatal("SessionAMBR should not be nil")
+	}
+	if sr.SessionAMBR.Uplink != 1000000 {
+		t.Errorf("SessionAMBR.Uplink = %d, want 1000000", sr.SessionAMBR.Uplink)
+	}
+	if sr.DefQFI != 1 {
+		t.Errorf("DefQFI = %d, want 1", sr.DefQFI)
 	}
 }
 

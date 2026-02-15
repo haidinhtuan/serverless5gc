@@ -48,6 +48,10 @@ func seedSession(t *testing.T, store *state.MockKVStore) {
 	if err := store.Put(context.Background(), "pdu-sessions/pdu-imsi-001010000000001-1", session); err != nil {
 		t.Fatalf("seed session: %v", err)
 	}
+	// Track IP allocation in Redis (mirrors pdu-session-create behavior)
+	if err := store.Put(context.Background(), "ip-pool/allocated/10.45.0.1", "10.45.0.1"); err != nil {
+		t.Fatalf("seed IP allocation: %v", err)
+	}
 }
 
 func TestHandle_ReleasePDUSession(t *testing.T) {
@@ -86,6 +90,13 @@ func TestHandle_ReleasePDUSession(t *testing.T) {
 	err = store.Get(context.Background(), "pdu-sessions/pdu-imsi-001010000000001-1", &session)
 	if err == nil {
 		t.Error("session should be deleted from store")
+	}
+
+	// Verify UE IP address released from pool (TS 29.244 Section 5.21)
+	var allocatedIP string
+	err = store.Get(context.Background(), "ip-pool/allocated/10.45.0.1", &allocatedIP)
+	if err == nil {
+		t.Error("IP 10.45.0.1 should be released from pool after session release")
 	}
 }
 

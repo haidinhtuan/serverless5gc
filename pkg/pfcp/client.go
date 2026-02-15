@@ -1,3 +1,5 @@
+// Package pfcp implements PFCP protocol communication between SMF and UPF
+// per 3GPP TS 29.244.
 package pfcp
 
 import (
@@ -9,7 +11,21 @@ import (
 	"github.com/wmnsk/go-pfcp/message"
 )
 
-// ModifyParams holds parameters for modifying a PFCP session.
+// SessionParams holds all parameters needed for PFCP session establishment
+// per TS 29.244 Section 7.5.2.
+type SessionParams struct {
+	SEID       uint64
+	UEIP       string
+	TEID       uint32
+	NodeID     string // SMF PFCP node IP (F-SEID)
+	AMBRUL     uint64 // Session-AMBR UL in kbps
+	AMBRDL     uint64 // Session-AMBR DL in kbps
+	QFI        uint8
+	NetworkDNN string // Data Network Name (network instance)
+}
+
+// ModifyParams holds parameters for PFCP session modification
+// per TS 29.244 Section 7.5.4.
 type ModifyParams struct {
 	AMBRUL uint64
 	AMBRDL uint64
@@ -49,7 +65,7 @@ func (u *UDPSender) Close() error {
 	return u.conn.Close()
 }
 
-// Client communicates with the UPF via PFCP.
+// Client communicates with the UPF via PFCP (TS 29.244).
 type Client struct {
 	sender Sender
 	seq    uint32
@@ -73,21 +89,44 @@ func (c *Client) nextSeq() uint32 {
 	return atomic.AddUint32(&c.seq, 1)
 }
 
-// BuildEstablishSession constructs a PFCP Session Establishment Request.
-func BuildEstablishSession(seid uint64, ueIP string, teid uint32, seq uint32) *message.SessionEstablishmentRequest {
+// BuildEstablishSession constructs a PFCP Session Establishment Request
+// per TS 29.244 Section 7.5.2 with the following IEs:
+//   - Node ID (SMF PFCP address)
+//   - F-SEID (SMF-assigned SEID)
+//   - Create PDR: PDR ID, precedence, PDI (source interface, F-TEID, network instance)
+//   - Create FAR: FAR ID, apply action (FORW), forwarding parameters (destination interface)
+//   - Create QER: QER ID, gate status (open), MBR (UL/DL), GBR (UL/DL)
+//   - Create URR: URR ID, measurement method (volume+duration), reporting triggers
+func BuildEstablishSession(p SessionParams, seq uint32) *message.SessionEstablishmentRequest {
+	nodeIP := p.NodeID
+	if nodeIP == "" {
+		nodeIP = "127.0.0.1"
+	}
+	dnn := p.NetworkDNN
+	if dnn == "" {
+		dnn = "internet"
+	}
+
 	return message.NewSessionEstablishmentRequest(
 		0, 0,
-		seid,
+		p.SEID,
 		seq,
 		0,
+		// TS 29.244 Section 7.5.2.1: Node ID
+		ie.NewNodeID(nodeIP, "", ""),
+		// TS 29.244 Section 7.5.2.2: F-SEID (CP function SEID)
+		ie.NewFSEID(p.SEID, net.ParseIP(nodeIP), nil),
+		// TS 29.244 Section 7.5.2.3: Create PDR
 		ie.NewCreatePDR(
 			ie.NewPDRID(1),
 			ie.NewPrecedence(100),
 			ie.NewPDI(
 				ie.NewSourceInterface(ie.SrcInterfaceAccess),
-				ie.NewFTEID(0x01, teid, net.ParseIP(ueIP), nil, 0),
+				ie.NewFTEID(0x01, p.TEID, net.ParseIP(p.UEIP), nil, 0),
+				ie.NewNetworkInstance(dnn),
 			),
 		),
+		// TS 29.244 Section 7.5.2.4: Create FAR
 		ie.NewCreateFAR(
 			ie.NewFARID(1),
 			ie.NewApplyAction(0x02), // FORW (forward)
@@ -95,12 +134,39 @@ func BuildEstablishSession(seid uint64, ueIP string, teid uint32, seq uint32) *m
 				ie.NewDestinationInterface(ie.DstInterfaceCore),
 			),
 		),
+		// TS 29.244 Section 7.5.2.6: Create QER (QoS Enforcement Rule)
+		ie.NewCreateQER(
+			ie.NewQERID(1),
+			ie.NewGateStatus(ie.GateStatusOpen, ie.GateStatusOpen),
+			ie.NewMBR(p.AMBRUL, p.AMBRDL),
+			ie.NewGBR(0, 0), // no guaranteed bit rate for default bearer
+		),
+		// TS 29.244 Section 7.5.2.5: Create URR (Usage Reporting Rule)
+		// Used for cost metrics collection in evaluation
+		ie.NewCreateURR(
+			ie.NewURRID(1),
+			ie.NewMeasurementMethod(0, 1, 1), // volume + duration measurement
+			ie.NewReportingTriggers(0x01),     // periodic reporting
+		),
 	)
 }
 
-// EstablishSession sends a PFCP Session Establishment Request to the UPF.
+// EstablishSession sends a PFCP Session Establishment Request to the UPF
+// per TS 29.244 Section 7.5.2.
 func (c *Client) EstablishSession(seid uint64, ueIP string, teid uint32) error {
-	msg := BuildEstablishSession(seid, ueIP, teid, c.nextSeq())
+	p := SessionParams{
+		SEID:   seid,
+		UEIP:   ueIP,
+		TEID:   teid,
+		AMBRUL: 1000000, // default 1 Mbps
+		AMBRDL: 5000000, // default 5 Mbps
+	}
+	return c.EstablishSessionWithParams(p)
+}
+
+// EstablishSessionWithParams sends a full PFCP Session Establishment Request.
+func (c *Client) EstablishSessionWithParams(p SessionParams) error {
+	msg := BuildEstablishSession(p, c.nextSeq())
 	b := make([]byte, msg.MarshalLen())
 	if err := msg.MarshalTo(b); err != nil {
 		return fmt.Errorf("marshal session establishment: %w", err)
@@ -108,25 +174,40 @@ func (c *Client) EstablishSession(seid uint64, ueIP string, teid uint32) error {
 	return c.sender.Send(b)
 }
 
-// BuildModifySession constructs a PFCP Session Modification Request.
+// BuildModifySession constructs a PFCP Session Modification Request
+// per TS 29.244 Section 7.5.4.
 func BuildModifySession(seid uint64, params ModifyParams, seq uint32) *message.SessionModificationRequest {
-	return message.NewSessionModificationRequest(
-		0, 0,
-		seid,
-		seq,
-		0,
+	ies := []*ie.IE{
 		ie.NewUpdatePDR(
 			ie.NewPDRID(1),
 			ie.NewPrecedence(100),
 		),
 		ie.NewUpdateFAR(
 			ie.NewFARID(1),
-			ie.NewApplyAction(0x02),
+			ie.NewApplyAction(0x02), // FORW
 		),
+	}
+
+	// Update QER with new AMBR if provided
+	if params.AMBRUL > 0 || params.AMBRDL > 0 {
+		ies = append(ies, ie.NewUpdateQER(
+			ie.NewQERID(1),
+			ie.NewGateStatus(ie.GateStatusOpen, ie.GateStatusOpen),
+			ie.NewMBR(params.AMBRUL, params.AMBRDL),
+		))
+	}
+
+	return message.NewSessionModificationRequest(
+		0, 0,
+		seid,
+		seq,
+		0,
+		ies...,
 	)
 }
 
-// ModifySession sends a PFCP Session Modification Request to the UPF.
+// ModifySession sends a PFCP Session Modification Request to the UPF
+// per TS 29.244 Section 7.5.4.
 func (c *Client) ModifySession(seid uint64, params ModifyParams) error {
 	msg := BuildModifySession(seid, params, c.nextSeq())
 	b := make([]byte, msg.MarshalLen())
@@ -136,7 +217,8 @@ func (c *Client) ModifySession(seid uint64, params ModifyParams) error {
 	return c.sender.Send(b)
 }
 
-// BuildDeleteSession constructs a PFCP Session Deletion Request.
+// BuildDeleteSession constructs a PFCP Session Deletion Request
+// per TS 29.244 Section 7.5.6.
 func BuildDeleteSession(seid uint64, seq uint32) *message.SessionDeletionRequest {
 	return message.NewSessionDeletionRequest(
 		0, 0,
@@ -146,7 +228,8 @@ func BuildDeleteSession(seid uint64, seq uint32) *message.SessionDeletionRequest
 	)
 }
 
-// DeleteSession sends a PFCP Session Deletion Request to the UPF.
+// DeleteSession sends a PFCP Session Deletion Request to the UPF
+// per TS 29.244 Section 7.5.6.
 func (c *Client) DeleteSession(seid uint64) error {
 	msg := BuildDeleteSession(seid, c.nextSeq())
 	b := make([]byte, msg.MarshalLen())
