@@ -38,7 +38,7 @@ func Handle(req handler.Request) (handler.Response, error) {
 	if profile.NFInstanceID == "" {
 		return handler.Response{
 			StatusCode: http.StatusBadRequest,
-			Body:       []byte(`{"error":"nf_instance_id is required"}`),
+			Body:       []byte(`{"error":"nfInstanceId is required"}`),
 		}, nil
 	}
 

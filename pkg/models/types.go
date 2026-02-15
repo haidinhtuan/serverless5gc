@@ -1,6 +1,52 @@
 package models
 
-import "time"
+import (
+	"net/http"
+	"time"
+)
+
+// ProblemDetails represents an error response per 3GPP TS 29.571 Section 5.2.3
+// and RFC 7807. All 3GPP SBI error responses use this format.
+type ProblemDetails struct {
+	Type   string `json:"type,omitempty"`
+	Title  string `json:"title"`
+	Status int    `json:"status"`
+	Detail string `json:"detail,omitempty"`
+	Cause  string `json:"cause,omitempty"` // 3GPP application-level cause (TS 29.500 Section 5.2.7.2)
+}
+
+// NewProblemDetails creates a ProblemDetails with standard HTTP title mapping.
+func NewProblemDetails(status int, cause string, detail string) *ProblemDetails {
+	return &ProblemDetails{
+		Title:  httpStatusTitle(status),
+		Status: status,
+		Cause:  cause,
+		Detail: detail,
+	}
+}
+
+func httpStatusTitle(status int) string {
+	switch status {
+	case http.StatusBadRequest:
+		return "Bad Request"
+	case http.StatusUnauthorized:
+		return "Unauthorized"
+	case http.StatusForbidden:
+		return "Forbidden"
+	case http.StatusNotFound:
+		return "Not Found"
+	case http.StatusConflict:
+		return "Conflict"
+	case http.StatusInternalServerError:
+		return "Internal Server Error"
+	case http.StatusBadGateway:
+		return "Bad Gateway"
+	case http.StatusServiceUnavailable:
+		return "Service Unavailable"
+	default:
+		return "Error"
+	}
+}
 
 // UEContext represents a UE's state in the AMF, stored in Redis.
 type UEContext struct {
@@ -54,21 +100,22 @@ type PDUSession struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// NFProfile represents an NF instance in the NRF, stored in etcd.
+// NFProfile represents an NF instance in the NRF per TS 29.510 Section 6.1.6.2.2.
+// JSON field names follow 3GPP OpenAPI specs (camelCase).
 type NFProfile struct {
-	NFInstanceID   string      `json:"nf_instance_id"`
-	NFType         string      `json:"nf_type"`   // AMF, SMF, UDM, etc.
-	NFStatus       string      `json:"nf_status"` // REGISTERED, SUSPENDED
-	IPv4Addresses  []string    `json:"ipv4_addresses"`
-	NFServices     []NFService `json:"nf_services"`
-	PLMN           []PlmnID    `json:"plmn_list"`
-	HeartbeatTimer int         `json:"heartbeat_timer"`
+	NFInstanceID   string      `json:"nfInstanceId"`
+	NFType         string      `json:"nfType"`            // AMF, SMF, UDM, etc.
+	NFStatus       string      `json:"nfStatus"`          // REGISTERED, SUSPENDED
+	IPv4Addresses  []string    `json:"ipv4Addresses"`
+	NFServices     []NFService `json:"nfServices"`
+	PLMN           []PlmnID    `json:"plmnList"`
+	HeartbeatTimer int         `json:"heartBeatTimer"`
 }
 
-// NFService represents a service offered by an NF.
+// NFService represents a service offered by an NF per TS 29.510.
 type NFService struct {
-	ServiceInstanceID string   `json:"service_instance_id"`
-	ServiceName       string   `json:"service_name"`
+	ServiceInstanceID string   `json:"serviceInstanceId"`
+	ServiceName       string   `json:"serviceName"`
 	Versions          []string `json:"versions"`
 	Scheme            string   `json:"scheme"`
 	FQDN              string   `json:"fqdn"`

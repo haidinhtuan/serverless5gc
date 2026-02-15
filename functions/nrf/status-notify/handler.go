@@ -19,10 +19,10 @@ func SetStore(s state.KVStore) {
 	store = s
 }
 
-// StatusNotification represents an NF status change event.
+// StatusNotification represents an NF status change event per TS 29.510.
 type StatusNotification struct {
-	NFInstanceID string `json:"nf_instance_id"`
-	NFStatus     string `json:"nf_status"` // REGISTERED, SUSPENDED, UNDISCOVERABLE
+	NFInstanceID string `json:"nfInstanceId"`
+	NFStatus     string `json:"nfStatus"` // REGISTERED, SUSPENDED, UNDISCOVERABLE
 }
 
 // Handle processes NF status notifications and updates the NRF registry.
@@ -43,7 +43,7 @@ func Handle(req handler.Request) (handler.Response, error) {
 	if notif.NFInstanceID == "" {
 		return handler.Response{
 			StatusCode: http.StatusBadRequest,
-			Body:       []byte(`{"error":"nf_instance_id is required"}`),
+			Body:       []byte(`{"error":"nfInstanceId is required"}`),
 		}, nil
 	}
 
