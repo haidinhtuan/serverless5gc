@@ -23,6 +23,7 @@ import (
 	"time"
 
 	handler "github.com/openfaas/templates-sdk/go-http"
+	"github.com/tdinh/serverless5gc/pkg/crypto"
 	"github.com/tdinh/serverless5gc/pkg/models"
 	"github.com/tdinh/serverless5gc/pkg/nas"
 	"github.com/tdinh/serverless5gc/pkg/sbi"
@@ -135,10 +136,37 @@ func Handle(req handler.Request) (handler.Response, error) {
 	// Allocate AMF-UE-NGAP-ID (TS 38.413 Section 9.3.3.1)
 	amfUeNgapID := atomic.AddInt64(&amfUeNgapIDCounter, 1)
 
-	// Step 1: Nausf_UEAuthentication -- Authenticate via AUSF (TS 29.509)
+	// Step 1a: Nausf_UEAuthentication_Initiate -- Get auth challenge (TS 29.509 Section 6.1.3)
+	// This calls UDM to generate 5G-AKA auth vectors and returns RAND/AUTN challenge.
+	var authChallenge struct {
+		AuthType string `json:"auth_type"`
+		RAND     string `json:"rand"`
+		AUTN     string `json:"autn"`
+		SUPI     string `json:"supi"`
+	}
+	if err := sbiClient.CallFunction("amf-auth-initiate",
+		map[string]string{"supi": regReq.SUPI},
+		&authChallenge); err != nil {
+		return problemResp(http.StatusInternalServerError,
+			"UPSTREAM_NF_FAILURE",
+			fmt.Sprintf("Nausf_UEAuthentication_Initiate: %s", err)), nil
+	}
+
+	// Step 1b: Simulate UE computing RES* from RAND challenge (TS 33.501 Section 6.1.3)
+	// In production, RAND/AUTN are sent to the UE which computes RES* using its USIM.
+	// Here we read the stored auth vector to obtain the expected RES* (== XRES*),
+	// simulating a correct UE response for the function-per-procedure evaluation.
+	var storedAV crypto.AuthVector
+	if err := store.Get(ctx, "auth-vectors/"+regReq.SUPI, &storedAV); err != nil {
+		return problemResp(http.StatusInternalServerError,
+			"AUTH_VECTOR_FAILURE",
+			fmt.Sprintf("read auth vector: %s", err)), nil
+	}
+
+	// Step 1c: Nausf_UEAuthentication_Authenticate -- Verify RES* via AUSF (TS 29.509)
 	var authResult authResponse
 	if err := sbiClient.CallFunction("ausf-authenticate",
-		map[string]string{"supi": regReq.SUPI, "res_star": ""},
+		map[string]string{"supi": regReq.SUPI, "res_star": hex.EncodeToString(storedAV.XRES)},
 		&authResult); err != nil {
 		return problemResp(http.StatusInternalServerError,
 			"UPSTREAM_NF_FAILURE",

@@ -37,6 +37,9 @@ func (r *RedisStore) Set(ctx context.Context, key string, value interface{}, ttl
 func (r *RedisStore) Get(ctx context.Context, key string, dest interface{}) error {
 	data, err := r.client.Get(ctx, key).Bytes()
 	if err != nil {
+		if err == redis.Nil {
+			return fmt.Errorf("key %s not found", key)
+		}
 		return fmt.Errorf("get %s: %w", key, err)
 	}
 	return json.Unmarshal(data, dest)

@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	handler "github.com/openfaas/templates-sdk/go-http"
+	"github.com/tdinh/serverless5gc/pkg/crypto"
 	"github.com/tdinh/serverless5gc/pkg/models"
 	"github.com/tdinh/serverless5gc/pkg/nas"
 	"github.com/tdinh/serverless5gc/pkg/state"
@@ -42,7 +43,23 @@ func setupSuccessMocks() (*state.MockKVStore, *mockSBI) {
 	mockStore := state.NewMockKVStore()
 	SetStore(mockStore)
 
+	// Pre-populate auth vector in store (simulating what UDM generate-auth-data does)
+	testXRES := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10}
+	testKAUSF := []byte{0xaa, 0xbb, 0xcc, 0xdd}
+	mockStore.Put(context.Background(), "auth-vectors/imsi-001010000000001", &crypto.AuthVector{
+		RAND:  []byte{0x00},
+		AUTN:  []byte{0x00},
+		XRES:  testXRES,
+		KAUSF: testKAUSF,
+	})
+
 	mock := newMockSBI()
+	mock.responses["amf-auth-initiate"] = map[string]string{
+		"auth_type": "5G_AKA",
+		"rand":      "00112233445566778899aabbccddeeff",
+		"autn":      "ffeeddccbbaa99887766554433221100",
+		"supi":      "imsi-001010000000001",
+	}
 	mock.responses["ausf-authenticate"] = map[string]string{
 		"auth_result": "SUCCESS",
 		"supi":        "imsi-001010000000001",
@@ -135,8 +152,8 @@ func TestHandle_Registration_Success(t *testing.T) {
 		t.Error("registration_time should not be zero")
 	}
 
-	// Verify 3GPP call chain order: AUSF -> UDM(get) -> UDM(register)
-	expectedCalls := []string{"ausf-authenticate", "udm-get-subscriber-data", "udm-registration"}
+	// Verify 3GPP call chain order: auth-initiate -> AUSF -> UDM(get) -> UDM(register)
+	expectedCalls := []string{"amf-auth-initiate", "ausf-authenticate", "udm-get-subscriber-data", "udm-registration"}
 	if len(mock.calls) != len(expectedCalls) {
 		t.Fatalf("SBI calls = %v, want %v", mock.calls, expectedCalls)
 	}
@@ -181,9 +198,19 @@ func TestHandle_Registration_Success_StateTransitionTimestamps(t *testing.T) {
 }
 
 func TestHandle_Registration_AuthFailure_ProblemDetails(t *testing.T) {
-	SetStore(state.NewMockKVStore())
+	mockStore := state.NewMockKVStore()
+	SetStore(mockStore)
+
+	// Pre-populate auth vector
+	mockStore.Put(context.Background(), "auth-vectors/imsi-001010000000001", &crypto.AuthVector{
+		RAND: []byte{0x00}, AUTN: []byte{0x00},
+		XRES: []byte{0x01, 0x02, 0x03, 0x04}, KAUSF: []byte{0xaa},
+	})
 
 	mock := newMockSBI()
+	mock.responses["amf-auth-initiate"] = map[string]string{
+		"auth_type": "5G_AKA", "rand": "00", "autn": "00", "supi": "imsi-001010000000001",
+	}
 	mock.responses["ausf-authenticate"] = map[string]string{
 		"auth_result": "FAILURE",
 		"supi":        "imsi-001010000000001",
@@ -221,9 +248,18 @@ func TestHandle_Registration_AuthFailure_ProblemDetails(t *testing.T) {
 }
 
 func TestHandle_Registration_AuthFailure_NASReject(t *testing.T) {
-	SetStore(state.NewMockKVStore())
+	mockStore := state.NewMockKVStore()
+	SetStore(mockStore)
+
+	mockStore.Put(context.Background(), "auth-vectors/imsi-001010000000001", &crypto.AuthVector{
+		RAND: []byte{0x00}, AUTN: []byte{0x00},
+		XRES: []byte{0x01, 0x02, 0x03, 0x04}, KAUSF: []byte{0xaa},
+	})
 
 	mock := newMockSBI()
+	mock.responses["amf-auth-initiate"] = map[string]string{
+		"auth_type": "5G_AKA", "rand": "00", "autn": "00", "supi": "imsi-001010000000001",
+	}
 	mock.responses["ausf-authenticate"] = map[string]string{
 		"auth_result": "FAILURE",
 		"supi":        "imsi-001010000000001",
@@ -299,7 +335,16 @@ func TestHandle_Registration_AMFUeNgapIDUnique(t *testing.T) {
 	mockStore := state.NewMockKVStore()
 	SetStore(mockStore)
 
+	// Pre-populate auth vectors for both UEs
+	for _, supi := range []string{"imsi-1", "imsi-2"} {
+		mockStore.Put(context.Background(), "auth-vectors/"+supi, &crypto.AuthVector{
+			RAND: []byte{0x00}, AUTN: []byte{0x00},
+			XRES: []byte{0x01, 0x02}, KAUSF: []byte{0xaa},
+		})
+	}
+
 	mock := newMockSBI()
+	mock.responses["amf-auth-initiate"] = map[string]string{"auth_type": "5G_AKA", "rand": "00", "autn": "00", "supi": "imsi-1"}
 	mock.responses["ausf-authenticate"] = map[string]string{"auth_result": "SUCCESS", "kausf": "aa"}
 	mock.responses["udm-get-subscriber-data"] = models.SubscriberData{SUPI: "imsi-1"}
 	SetSBI(mock)
@@ -309,6 +354,7 @@ func TestHandle_Registration_AMFUeNgapIDUnique(t *testing.T) {
 	Handle(handler.Request{Body: body1, Method: "POST"})
 
 	mock2 := newMockSBI()
+	mock2.responses["amf-auth-initiate"] = map[string]string{"auth_type": "5G_AKA", "rand": "00", "autn": "00", "supi": "imsi-2"}
 	mock2.responses["ausf-authenticate"] = map[string]string{"auth_result": "SUCCESS", "kausf": "bb"}
 	mock2.responses["udm-get-subscriber-data"] = models.SubscriberData{SUPI: "imsi-2"}
 	SetSBI(mock2)
@@ -326,9 +372,19 @@ func TestHandle_Registration_AMFUeNgapIDUnique(t *testing.T) {
 }
 
 func TestHandle_Registration_AUSFError_ProblemDetails(t *testing.T) {
-	SetStore(state.NewMockKVStore())
+	mockStore := state.NewMockKVStore()
+	SetStore(mockStore)
+
+	// Pre-populate auth vector so auth-initiate + store.Get succeed
+	mockStore.Put(context.Background(), "auth-vectors/imsi-001010000000001", &crypto.AuthVector{
+		RAND: []byte{0x00}, AUTN: []byte{0x00},
+		XRES: []byte{0x01, 0x02}, KAUSF: []byte{0xaa},
+	})
 
 	mock := newMockSBI()
+	mock.responses["amf-auth-initiate"] = map[string]string{
+		"auth_type": "5G_AKA", "rand": "00", "autn": "00", "supi": "imsi-001010000000001",
+	}
 	mock.errors["ausf-authenticate"] = fmt.Errorf("connection refused")
 	SetSBI(mock)
 
