@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"sync/atomic"
+	"time"
 
 	"github.com/wmnsk/go-pfcp/ie"
 	"github.com/wmnsk/go-pfcp/message"
@@ -87,6 +88,32 @@ func NewUDPClient(upfAddr string) (*Client, error) {
 
 func (c *Client) nextSeq() uint32 {
 	return atomic.AddUint32(&c.seq, 1)
+}
+
+// BuildAssociationSetupRequest constructs a PFCP Association Setup Request
+// per TS 29.244 Section 7.4.4.1. This is the first message exchanged between
+// SMF (CP function) and UPF (UP function) to establish the PFCP association.
+// IEs: Node ID, Recovery Time Stamp, CP Function Features (optional).
+func BuildAssociationSetupRequest(nodeID string, seq uint32) *message.AssociationSetupRequest {
+	if nodeID == "" {
+		nodeID = "127.0.0.1"
+	}
+	return message.NewAssociationSetupRequest(
+		seq,
+		ie.NewNodeID(nodeID, "", ""),
+		ie.NewRecoveryTimeStamp(time.Now()),
+	)
+}
+
+// AssociationSetup sends a PFCP Association Setup Request to the UPF
+// per TS 29.244 Section 7.4.4.
+func (c *Client) AssociationSetup(nodeID string) error {
+	msg := BuildAssociationSetupRequest(nodeID, c.nextSeq())
+	b := make([]byte, msg.MarshalLen())
+	if err := msg.MarshalTo(b); err != nil {
+		return fmt.Errorf("marshal association setup: %w", err)
+	}
+	return c.sender.Send(b)
 }
 
 // BuildEstablishSession constructs a PFCP Session Establishment Request

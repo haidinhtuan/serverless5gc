@@ -353,3 +353,153 @@ func TestClient_Close(t *testing.T) {
 		t.Error("sender was not closed")
 	}
 }
+
+func TestBuildAssociationSetupRequest(t *testing.T) {
+	msg := BuildAssociationSetupRequest("192.168.1.1", 1)
+
+	if msg.Sequence() != 1 {
+		t.Errorf("Sequence = %d, want 1", msg.Sequence())
+	}
+
+	// Verify Node ID IE
+	if msg.NodeID == nil {
+		t.Fatal("missing NodeID IE")
+	}
+
+	// Verify Recovery Time Stamp
+	if msg.RecoveryTimeStamp == nil {
+		t.Fatal("missing RecoveryTimeStamp IE")
+	}
+
+	// Verify the message can be marshalled
+	b := make([]byte, msg.MarshalLen())
+	if err := msg.MarshalTo(b); err != nil {
+		t.Fatalf("MarshalTo: %v", err)
+	}
+	if len(b) == 0 {
+		t.Error("marshalled bytes should not be empty")
+	}
+
+	// Parse back and verify message type
+	parsed, err := message.Parse(b)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if parsed.MessageType() != message.MsgTypeAssociationSetupRequest {
+		t.Errorf("type = %d, want AssociationSetupRequest", parsed.MessageType())
+	}
+}
+
+func TestBuildAssociationSetupRequest_DefaultNodeID(t *testing.T) {
+	msg := BuildAssociationSetupRequest("", 1)
+
+	if msg.NodeID == nil {
+		t.Fatal("should have default NodeID")
+	}
+
+	b := make([]byte, msg.MarshalLen())
+	if err := msg.MarshalTo(b); err != nil {
+		t.Fatalf("MarshalTo with default node: %v", err)
+	}
+}
+
+func TestClient_AssociationSetup(t *testing.T) {
+	mock := &mockSender{}
+	client := NewClient(mock)
+
+	if err := client.AssociationSetup("10.0.0.1"); err != nil {
+		t.Fatalf("AssociationSetup: %v", err)
+	}
+
+	if len(mock.messages) != 1 {
+		t.Fatalf("expected 1 message, got %d", len(mock.messages))
+	}
+
+	parsed, err := message.Parse(mock.messages[0])
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if parsed.MessageType() != message.MsgTypeAssociationSetupRequest {
+		t.Errorf("type = %d, want AssociationSetupRequest", parsed.MessageType())
+	}
+}
+
+func TestBuildEstablishSession_QERDetails(t *testing.T) {
+	p := SessionParams{
+		SEID:       1,
+		UEIP:       "10.0.0.1",
+		TEID:       1,
+		AMBRUL:     2000000,
+		AMBRDL:     8000000,
+	}
+	msg := BuildEstablishSession(p, 1)
+
+	// Verify QER IE has correct sub-IEs
+	if len(msg.CreateQER) == 0 {
+		t.Fatal("missing CreateQER")
+	}
+	qerIEs, err := msg.CreateQER[0].CreateQER()
+	if err != nil {
+		t.Fatalf("parse CreateQER: %v", err)
+	}
+
+	var hasQERID, hasGateStatus, hasMBR bool
+	for _, child := range qerIEs {
+		switch child.Type {
+		case 109: // QERID
+			hasQERID = true
+		case 25: // GateStatus
+			hasGateStatus = true
+		case 26: // MBR
+			hasMBR = true
+		}
+	}
+	if !hasQERID {
+		t.Error("CreateQER missing QERID")
+	}
+	if !hasGateStatus {
+		t.Error("CreateQER missing GateStatus")
+	}
+	if !hasMBR {
+		t.Error("CreateQER missing MBR")
+	}
+}
+
+func TestBuildEstablishSession_URRDetails(t *testing.T) {
+	p := SessionParams{
+		SEID: 1,
+		UEIP: "10.0.0.1",
+		TEID: 1,
+	}
+	msg := BuildEstablishSession(p, 1)
+
+	// Verify URR IE has correct sub-IEs
+	if len(msg.CreateURR) == 0 {
+		t.Fatal("missing CreateURR")
+	}
+	urrIEs, err := msg.CreateURR[0].CreateURR()
+	if err != nil {
+		t.Fatalf("parse CreateURR: %v", err)
+	}
+
+	var hasURRID, hasMeasMethod, hasReportTrig bool
+	for _, child := range urrIEs {
+		switch child.Type {
+		case 81: // URRID
+			hasURRID = true
+		case 62: // MeasurementMethod
+			hasMeasMethod = true
+		case 37: // ReportingTriggers
+			hasReportTrig = true
+		}
+	}
+	if !hasURRID {
+		t.Error("CreateURR missing URRID")
+	}
+	if !hasMeasMethod {
+		t.Error("CreateURR missing MeasurementMethod")
+	}
+	if !hasReportTrig {
+		t.Error("CreateURR missing ReportingTriggers")
+	}
+}
