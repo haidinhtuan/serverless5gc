@@ -1,16 +1,18 @@
 #!/bin/bash
 # Runs a load generation scenario against a target system and collects metrics.
 #
+# For serverless target: Uses HTTP load testing against OpenFaaS functions.
+# For open5gs/free5gc:   Uses UERANSIM (Docker) with SCTP/NGAP.
+#
 # Usage: ./run-scenario.sh <scenario> <target> [run_number]
 #   scenario: idle | low | medium | high | burst
 #   target:   serverless | open5gs | free5gc
 #   run_number: 1 (default)
 #
 # Environment variables:
-#   MONITORING_IP  - IP of the Prometheus/monitoring VM
+#   MONITORING_IP  - IP of the Prometheus VM (or loadgen if co-located)
 #   LOADGEN_IP     - IP of the load generator VM
 #   TARGET_AMF_IP  - IP of the target system's AMF endpoint
-#   UERANSIM_DIR   - Path to UERANSIM installation (default: /opt/UERANSIM)
 
 set -euo pipefail
 
@@ -27,7 +29,11 @@ RESULTS_DIR="${PROJECT_DIR}/eval/results/${TARGET}/${SCENARIO}/run${RUN}"
 MONITORING_IP="${MONITORING_IP:?Set MONITORING_IP}"
 LOADGEN_IP="${LOADGEN_IP:?Set LOADGEN_IP}"
 TARGET_AMF_IP="${TARGET_AMF_IP:?Set TARGET_AMF_IP}"
-UERANSIM_DIR="${UERANSIM_DIR:-/opt/UERANSIM}"
+
+UERANSIM_IMAGE="${UERANSIM_IMAGE:-openverso/ueransim:3.2.6}"
+SSH_KEY="${SSH_KEY:-$HOME/.ssh/id_rsa}"
+# OpenFaaS gateway NodePort on the serverless VM.
+OPENFAAS_PORT="${OPENFAAS_PORT:-31113}"
 
 if [ ! -f "$SCENARIO_FILE" ]; then
     echo "ERROR: Scenario file not found: ${SCENARIO_FILE}"
@@ -52,9 +58,124 @@ echo "UEs: ${UE_COUNT}, Rate: ${REG_RATE}/s, Duration: ${DURATION}min, PDU sessi
 START_TIME=$(date -Iseconds)
 echo "$START_TIME" > "${RESULTS_DIR}/start_time"
 
-# Generate UERANSIM gNB config.
-GNB_CONFIG="${RESULTS_DIR}/gnb.yaml"
-cat > "$GNB_CONFIG" << GNBEOF
+# ---------------------------------------------------------------------------
+# Load generation: serverless (HTTP) vs traditional (UERANSIM)
+# ---------------------------------------------------------------------------
+if [ "$UE_COUNT" -eq 0 ]; then
+    echo "Idle scenario: no UEs to start, just collecting baseline metrics."
+    sleep $((DURATION * 60))
+
+elif [ "$TARGET" = "serverless" ]; then
+    # HTTP load testing against OpenFaaS functions.
+    GATEWAY_URL="http://${TARGET_AMF_IP}:${OPENFAAS_PORT}/function"
+
+    echo "Mode: HTTP load testing against serverless functions"
+    echo "Gateway: ${GATEWAY_URL}"
+
+    # Install hey on loadgen if not present.
+    ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "root@${LOADGEN_IP}" '
+        if ! command -v hey &>/dev/null; then
+            apt-get install -y -qq golang-go 2>/dev/null
+            go install github.com/rakyll/hey@latest 2>/dev/null
+            cp ~/go/bin/hey /usr/local/bin/ 2>/dev/null || true
+        fi
+        which hey || echo "hey not found, using curl"
+    ' 2>/dev/null
+
+    # Generate load: simulate UE registration + PDU session procedures.
+    # Each "UE" triggers: 1x registration + N PDU sessions.
+    # Rate-limit to REG_RATE registrations/sec.
+    TOTAL_CALLS=$((UE_COUNT + UE_COUNT * PDU_SESSIONS))
+    DURATION_SECS=$((DURATION * 60))
+
+    echo "Generating HTTP load: ${UE_COUNT} registrations + ${PDU_SESSIONS} PDU sessions each"
+    echo "Total function calls: ~${TOTAL_CALLS}, Duration: ${DURATION_SECS}s"
+
+    # Run load generation on the loadgen VM via SSH.
+    ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "root@${LOADGEN_IP}" "bash -s" << LOADEOF > "${RESULTS_DIR}/loadgen.log" 2>&1 &
+LOADGEN_PID=\$\$
+GATEWAY="${GATEWAY_URL}"
+UE_COUNT=${UE_COUNT}
+REG_RATE=${REG_RATE}
+PDU_SESSIONS=${PDU_SESSIONS}
+DURATION=${DURATION_SECS}
+
+echo "[\$(date +%H:%M:%S)] Starting HTTP load generation..."
+echo "  Gateway: \${GATEWAY}"
+echo "  UEs: \${UE_COUNT}, Rate: \${REG_RATE}/s, PDU: \${PDU_SESSIONS}/UE"
+
+STARTED=0
+START_TS=\$(date +%s)
+
+while [ \$STARTED -lt \$UE_COUNT ]; do
+    BATCH=\$REG_RATE
+    REMAINING=\$((UE_COUNT - STARTED))
+    [ \$BATCH -gt \$REMAINING ] && BATCH=\$REMAINING
+
+    for i in \$(seq 1 \$BATCH); do
+        IMSI_NUM=\$((STARTED + i))
+        SUPI=\$(printf "imsi-001010%09d" \$IMSI_NUM)
+
+        # Registration request
+        curl -s -X POST "\${GATEWAY}/amf-initial-registration" \
+            -H "Content-Type: application/json" \
+            -d "{\"supi\":\"\${SUPI}\",\"ran_ue_ngap_id\":\${IMSI_NUM},\"registration_type\":1}" \
+            -o /dev/null -w "%{http_code} %{time_total}s\n" >> /tmp/s5gc-eval/reg-results.txt &
+
+        # PDU session requests
+        for p in \$(seq 1 \$PDU_SESSIONS); do
+            curl -s -X POST "\${GATEWAY}/smf-pdu-session-create" \
+                -H "Content-Type: application/json" \
+                -d "{\"supi\":\"\${SUPI}\",\"pdu_session_id\":\${p},\"dnn\":\"internet\",\"snssai\":{\"sst\":1,\"sd\":\"010203\"}}" \
+                -o /dev/null -w "%{http_code} %{time_total}s\n" >> /tmp/s5gc-eval/pdu-results.txt &
+        done
+    done
+
+    STARTED=\$((STARTED + BATCH))
+    echo "  [\$(date +%H:%M:%S)] Sent \${STARTED}/\${UE_COUNT} UE registrations"
+    sleep 1
+done
+
+echo "[\$(date +%H:%M:%S)] All registrations sent. Waiting for remaining duration..."
+
+# Wait for the full scenario duration.
+NOW=\$(date +%s)
+ELAPSED=\$((NOW - START_TS))
+REMAIN=\$((DURATION - ELAPSED))
+[ \$REMAIN -gt 0 ] && sleep \$REMAIN
+
+# Wait for background curls to finish.
+wait
+
+echo "[\$(date +%H:%M:%S)] Load generation complete."
+echo "Registration results:"
+wc -l /tmp/s5gc-eval/reg-results.txt 2>/dev/null || echo "  No reg results"
+echo "PDU session results:"
+wc -l /tmp/s5gc-eval/pdu-results.txt 2>/dev/null || echo "  No PDU results"
+LOADEOF
+
+    LOAD_PID=$!
+    echo "Load generation running (PID: ${LOAD_PID}). Waiting ${DURATION} minutes..."
+    sleep $((DURATION * 60))
+
+    # Retrieve results from loadgen.
+    wait "$LOAD_PID" 2>/dev/null || true
+    scp -i "$SSH_KEY" -o StrictHostKeyChecking=no \
+        "root@${LOADGEN_IP}:/tmp/s5gc-eval/reg-results.txt" "${RESULTS_DIR}/reg-results.txt" 2>/dev/null || true
+    scp -i "$SSH_KEY" -o StrictHostKeyChecking=no \
+        "root@${LOADGEN_IP}:/tmp/s5gc-eval/pdu-results.txt" "${RESULTS_DIR}/pdu-results.txt" 2>/dev/null || true
+
+    # Clean up on loadgen.
+    ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "root@${LOADGEN_IP}" \
+        "rm -f /tmp/s5gc-eval/reg-results.txt /tmp/s5gc-eval/pdu-results.txt" 2>/dev/null || true
+
+else
+    # UERANSIM mode for open5gs / free5gc targets.
+    echo "Mode: UERANSIM (SCTP/NGAP) against ${TARGET}"
+
+    # Generate UERANSIM configs.
+    GNB_CONFIG="${RESULTS_DIR}/gnb.yaml"
+    cat > "$GNB_CONFIG" << GNBEOF
 mcc: '001'
 mnc: '01'
 nci: '0x000000010'
@@ -72,9 +193,8 @@ slices:
 ignoreStreamIds: true
 GNBEOF
 
-# Generate UERANSIM UE config.
-UE_CONFIG="${RESULTS_DIR}/ue.yaml"
-cat > "$UE_CONFIG" << UEEOF
+    UE_CONFIG="${RESULTS_DIR}/ue.yaml"
+    cat > "$UE_CONFIG" << UEEOF
 supi: 'imsi-001010000000001'
 mcc: '001'
 mnc: '01'
@@ -106,56 +226,66 @@ ciphering:
   EA3: true
 UEEOF
 
-if [ "$UE_COUNT" -eq 0 ]; then
-    echo "Idle scenario: no UEs to start, just collecting baseline metrics."
-    sleep $((DURATION * 60))
-else
-    # Start gNB.
+    # Copy config files to loadgen VM.
+    echo "Copying configs to loadgen..."
+    ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "root@${LOADGEN_IP}" "mkdir -p /tmp/s5gc-eval"
+    scp -i "$SSH_KEY" -o StrictHostKeyChecking=no "$GNB_CONFIG" "root@${LOADGEN_IP}:/tmp/s5gc-eval/gnb.yaml"
+    scp -i "$SSH_KEY" -o StrictHostKeyChecking=no "$UE_CONFIG" "root@${LOADGEN_IP}:/tmp/s5gc-eval/ue.yaml"
+
+    # Start gNB via Docker.
     echo "Starting gNB..."
-    ssh "root@${LOADGEN_IP}" \
-        "${UERANSIM_DIR}/build/nr-gnb -c /dev/stdin" < "$GNB_CONFIG" \
-        > "${RESULTS_DIR}/gnb.log" 2>&1 &
-    GNB_PID=$!
+    ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "root@${LOADGEN_IP}" \
+        "docker rm -f s5gc-gnb 2>/dev/null; \
+         docker run -d --name s5gc-gnb --network host --rm \
+           --entrypoint nr-gnb \
+           -v /tmp/s5gc-eval:/config:ro \
+           ${UERANSIM_IMAGE} -c /config/gnb.yaml" \
+        > "${RESULTS_DIR}/gnb.log" 2>&1
     sleep 5
 
-    # Start UEs with rate limiting.
-    echo "Starting ${UE_COUNT} UEs at ${REG_RATE}/s..."
-    STARTED=0
-    while [ "$STARTED" -lt "$UE_COUNT" ]; do
-        BATCH=$REG_RATE
-        REMAINING=$((UE_COUNT - STARTED))
-        if [ "$BATCH" -gt "$REMAINING" ]; then
-            BATCH=$REMAINING
-        fi
+    # Verify gNB is running.
+    if ! ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "root@${LOADGEN_IP}" \
+        "docker ps --filter name=s5gc-gnb --format '{{.Status}}'" 2>/dev/null | grep -q "Up"; then
+        echo "ERROR: gNB failed to start"
+        ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "root@${LOADGEN_IP}" \
+            "docker logs s5gc-gnb 2>&1" >> "${RESULTS_DIR}/gnb.log" 2>&1
+        exit 1
+    fi
 
-        for i in $(seq 1 "$BATCH"); do
-            IMSI_NUM=$((STARTED + i))
-            IMSI=$(printf "imsi-001010%09d" "$IMSI_NUM")
-            ssh "root@${LOADGEN_IP}" \
-                "sed 's/imsi-001010000000001/${IMSI}/' /dev/stdin | ${UERANSIM_DIR}/build/nr-ue -c /dev/stdin" \
-                < "$UE_CONFIG" \
-                >> "${RESULTS_DIR}/ue.log" 2>&1 &
-        done
-
-        STARTED=$((STARTED + BATCH))
-        echo "  Started ${STARTED}/${UE_COUNT} UEs"
-        sleep 1
-    done
+    # Start UEs via Docker with -n for multi-UE.
+    echo "Starting ${UE_COUNT} UEs..."
+    ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "root@${LOADGEN_IP}" \
+        "docker rm -f s5gc-ue 2>/dev/null; \
+         docker run -d --name s5gc-ue --network host --rm \
+           --entrypoint nr-ue \
+           -v /tmp/s5gc-eval:/config:ro \
+           ${UERANSIM_IMAGE} -c /config/ue.yaml -n ${UE_COUNT} -l -r" \
+        > "${RESULTS_DIR}/ue.log" 2>&1
+    sleep 10
 
     echo "All UEs started. Waiting for ${DURATION} minutes..."
     sleep $((DURATION * 60))
 
     # Stop UEs and gNB.
     echo "Stopping UERANSIM..."
-    ssh "root@${LOADGEN_IP}" "killall nr-ue nr-gnb 2>/dev/null || true"
-    wait "$GNB_PID" 2>/dev/null || true
+    ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "root@${LOADGEN_IP}" \
+        "docker logs s5gc-gnb >> /tmp/s5gc-eval/gnb-full.log 2>&1; \
+         docker logs s5gc-ue >> /tmp/s5gc-eval/ue-full.log 2>&1; \
+         docker rm -f s5gc-ue s5gc-gnb 2>/dev/null || true"
+    # Retrieve logs.
+    scp -i "$SSH_KEY" -o StrictHostKeyChecking=no \
+        "root@${LOADGEN_IP}:/tmp/s5gc-eval/gnb-full.log" "${RESULTS_DIR}/gnb.log" 2>/dev/null || true
+    scp -i "$SSH_KEY" -o StrictHostKeyChecking=no \
+        "root@${LOADGEN_IP}:/tmp/s5gc-eval/ue-full.log" "${RESULTS_DIR}/ue.log" 2>/dev/null || true
 fi
 
 # Record end time.
 END_TIME=$(date -Iseconds)
 echo "$END_TIME" > "${RESULTS_DIR}/end_time"
 
+# ---------------------------------------------------------------------------
 # Collect Prometheus metrics for the test window.
+# ---------------------------------------------------------------------------
 echo "Collecting metrics from Prometheus..."
 PROM_URL="http://${MONITORING_IP}:9090"
 

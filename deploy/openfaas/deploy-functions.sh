@@ -76,10 +76,10 @@ scp -o StrictHostKeyChecking=no -i "$SSH_KEY" \
 
 ssh -o StrictHostKeyChecking=no -i "$SSH_KEY" "root@${VM_IP}" 'bash -s' << 'DEPLOY'
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
-export OPENFAAS_URL=http://127.0.0.1:8080
+export OPENFAAS_URL=http://127.0.0.1:31112
 
 cd /tmp
-faas-cli deploy -f stack.yml --update=true --replace=true
+faas-cli deploy -f stack.yml --update=false --replace
 
 echo ""
 echo "Waiting for functions to be ready (30s)..."
@@ -93,4 +93,4 @@ rm -f "${ARCHIVE}.gz"
 echo ""
 echo "=== Deployment complete ==="
 echo "Functions deployed to ${VM_IP}"
-echo "Test: curl -s http://${VM_IP}:8080/function/nrf-discover -d '{\"nf_type\":\"AMF\"}'"
+echo "Test: curl -s http://${VM_IP}:31112/function/nrf-discover -d '{\"nf_type\":\"AMF\"}'"
