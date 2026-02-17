@@ -35,6 +35,7 @@ type UEContext struct {
 	AMFUeNgapID int64
 	RANUeNgapID int64
 	XRES        []byte // stored for auth verification
+	DLSeqNum    byte   // NAS downlink sequence number for security header
 }
 
 // CoreBackend abstracts the 5GC function call interface.
@@ -332,8 +333,17 @@ func (p *SCTPProxy) handleUplinkNASTransport(ngapCtx *ngapCodec.NGAPContext) ([]
 		return nil, fmt.Errorf("no UE context for RAN-UE-NGAP-ID %d", ngapCtx.RANUeNgapID)
 	}
 
-	nasEPD := ngapCtx.NASPDU[0]
-	nasMsgType := ngapCtx.NASPDU[2]
+	// Strip NAS security header if present (after SMC, UE sends protected NAS)
+	nasPDU := nas.StripSecurityHeader(ngapCtx.NASPDU)
+	if len(nasPDU) < 3 {
+		return nil, fmt.Errorf("inner NAS PDU too short after stripping security header")
+	}
+
+	nasEPD := nasPDU[0]
+	nasMsgType := nasPDU[2]
+
+	// Update the NASPDU in context to the stripped version for downstream handlers
+	ngapCtx.NASPDU = nasPDU
 
 	switch {
 	case nasEPD == nas.EPD5GMM && nasMsgType == nas.MsgTypeAuthenticationResponse:
@@ -344,6 +354,10 @@ func (p *SCTPProxy) handleUplinkNASTransport(ngapCtx *ngapCodec.NGAPContext) ([]
 
 	case nasEPD == nas.EPD5GMM && nasMsgType == nas.MsgTypeULNASTransport:
 		return p.handleULNASTransport(ue, ngapCtx)
+
+	case nasEPD == nas.EPD5GMM && nasMsgType == nas.MsgTypeRegistrationComplete:
+		log.Printf("UE %s: Registration Complete received", ue.SUPI)
+		return nil, nil
 
 	default:
 		log.Printf("UE %s: unhandled NAS message EPD=0x%02x type=0x%02x", ue.SUPI, nasEPD, nasMsgType)
@@ -369,19 +383,21 @@ func (p *SCTPProxy) handleAuthResponse(ue *UEContext, ngapCtx *ngapCodec.NGAPCon
 
 	log.Printf("UE %s: Authentication Response verified", ue.SUPI)
 
-	// Build NAS Security Mode Command
-	smc := nas.EncodeSecurityModeCommand(&nas.SecurityModeCommand{
+	// Build NAS Security Mode Command (must be integrity-protected per TS 24.501 Section 4.4.6)
+	smcPlain := nas.EncodeSecurityModeCommand(&nas.SecurityModeCommand{
 		SelectedCiphering: nas.CipherAlg5GEA0, // null ciphering for eval
 		SelectedIntegrity: nas.IntegAlg5GIA0,   // null integrity for eval
 		NgKSI:             0,
 		ReplayedUESecCap:  &nas.UESecurityCapability{EA0: true, EA1: true, EA2: true, IA0: true, IA1: true, IA2: true},
 	})
+	smc := nas.WrapSecurityHeader(smcPlain, nas.SecurityHeaderIntegrityProtectedNewCtx, 0)
 
 	dlNAS, err := ngapCodec.BuildDownlinkNASTransport(ue.AMFUeNgapID, ue.RANUeNgapID, smc)
 	if err != nil {
 		return nil, fmt.Errorf("build downlink nas (smc): %w", err)
 	}
 
+	ue.DLSeqNum = 1
 	ue.State = UEStateSMCSent
 	log.Printf("UE %s: sent Security Mode Command, state=%s", ue.SUPI, ue.State)
 	return [][]byte{dlNAS}, nil
@@ -406,18 +422,20 @@ func (p *SCTPProxy) handleSecurityModeComplete(ue *UEContext, ngapCtx *ngapCodec
 		return nil, fmt.Errorf("register %s: %w", ue.SUPI, err)
 	}
 
-	// Build Registration Accept NAS message
-	var regAcceptNAS []byte
+	// Build Registration Accept NAS message (must be security-protected after SMC)
+	var regAcceptPlain []byte
 	if regResp.NASMessage != "" {
-		regAcceptNAS, _ = hex.DecodeString(regResp.NASMessage)
+		regAcceptPlain, _ = hex.DecodeString(regResp.NASMessage)
 	}
-	if len(regAcceptNAS) == 0 {
-		regAcceptNAS = nas.EncodeRegistrationAccept(&nas.RegistrationAccept{
+	if len(regAcceptPlain) == 0 {
+		regAcceptPlain = nas.EncodeRegistrationAccept(&nas.RegistrationAccept{
 			RegistrationResult: nas.RegResult3GPPAccess,
 			GUTI:               regResp.GUTI,
 			T3512Value:         nas.T3512Default,
 		})
 	}
+	regAcceptNAS := nas.WrapSecurityHeader(regAcceptPlain, nas.SecurityHeaderIntegrityProtectedCipheredNew, ue.DLSeqNum)
+	ue.DLSeqNum++
 
 	// Send via InitialContextSetupRequest (wraps Registration Accept)
 	icsr, err := ngapCodec.BuildInitialContextSetupRequest(
@@ -481,7 +499,9 @@ func (p *SCTPProxy) handlePDUSessionEstablishment(ue *UEContext, pduSessionID ui
 
 	// Build a minimal PDU Session Establishment Accept NAS, wrapped in DL NAS Transport
 	// For eval purposes, a simple accept with dummy IP is sufficient
-	pduAcceptNAS := buildPDUSessionAcceptNAS(pduSessionID)
+	pduAcceptPlain := buildPDUSessionAcceptNAS(pduSessionID)
+	pduAcceptNAS := nas.WrapSecurityHeader(pduAcceptPlain, nas.SecurityHeaderIntegrityProtectedCiphered, ue.DLSeqNum)
+	ue.DLSeqNum++
 	dlNAS, err := ngapCodec.BuildDownlinkNASTransport(ue.AMFUeNgapID, ue.RANUeNgapID, pduAcceptNAS)
 	if err != nil {
 		return nil, fmt.Errorf("build downlink nas (pdu accept): %w", err)
@@ -495,25 +515,29 @@ func (p *SCTPProxy) handlePDUSessionEstablishment(ue *UEContext, pduSessionID ui
 // buildPDUSessionAcceptNAS builds a DL NAS Transport containing a PDU Session Establishment Accept.
 func buildPDUSessionAcceptNAS(pduSessionID uint8) []byte {
 	// Inner: PDU Session Establishment Accept (TS 24.501 Section 8.3.2)
+	// Format: EPD(1) + PSID(1) + PTI(1) + MsgType(1) + SSCmode|PDUtype(1) +
+	//         AuthQoSRules(LV-E) + SessionAMBR(LV) + [PDUAddress(TLV)]
 	inner := []byte{
 		nas.EPD5GSM,       // EPD
 		pduSessionID,      // PDU Session ID
 		0x00,              // PTI
 		0xC2,              // PDU Session Establishment Accept message type
-		0x01,              // Selected PDU session type: IPv4
-		0x01,              // Selected SSC mode: SSC mode 1
-		0x09, 0x06,        // QoS rules length = 6
+		0x11,              // SSC mode 1 (bits 5-7) | PDU session type IPv4 (bits 1-3)
+		// Authorized QoS rules (LV-E: 2-byte length + value)
+		0x00, 0x06,        // QoS rules length = 6
 		0x01,              // QoS rule ID = 1
-		0x03,              // Rule length = 3
-		0x01,              // Rule operation: create new QoS rule
-		0x01,              // Number of packet filters = 1 (match all)
-		0x06,              // QFI = 6, DQR = 0
-		0x09,              // Session-AMBR length indicator
+		0x00, 0x03,        // Rule length = 3 (2 bytes per TS 24.501 Table 9.11.4.13.1)
+		0x21,              // Rule operation: create new QoS rule (001), DQR=0, num filters=1 (0001)
+		0x01,              // Packet filter: match all (direction=bidirectional)
+		0x06,              // QFI = 6
+		// Session-AMBR (LV: 1-byte length + value)
+		0x06,              // Session-AMBR length = 6
 		0x01,              // DL unit: kbps
 		0x00, 0x00,        // DL session AMBR
 		0x01,              // UL unit: kbps
 		0x00, 0x00,        // UL session AMBR
-		0x29, 0x05, 0x01,  // PDU address type + length: IPv4
+		// PDU address (optional TLV, IEI=0x29)
+		0x29, 0x05, 0x01,  // IEI + length=5 + PDU addr type=IPv4
 		0x0A, 0x0A, 0x00, 0x01, // IP: 10.10.0.1
 	}
 
@@ -521,10 +545,10 @@ func buildPDUSessionAcceptNAS(pduSessionID uint8) []byte {
 	containerLen := len(inner)
 	outer := []byte{
 		nas.EPD5GMM,                        // EPD
-		0x00,                               // Security header: plain
+		nas.SecurityHeaderPlain,            // Security header: plain (will be wrapped by caller)
 		nas.MsgTypeDLNASTransport,          // DL NAS Transport message type
-		0x01,                               // Payload container type: N1 SM
-		byte(containerLen >> 8), byte(containerLen), // Payload container length
+		0x01,                               // Payload container type: N1 SM (lower nibble) + spare (upper)
+		byte(containerLen >> 8), byte(containerLen), // Payload container length (LV-E)
 	}
 	outer = append(outer, inner...)
 
