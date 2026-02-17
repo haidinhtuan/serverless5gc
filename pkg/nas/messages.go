@@ -277,8 +277,9 @@ func EncodeAuthenticationRequest(rand []byte, autn []byte) []byte {
 
 // DecodeAuthenticationResponse decodes a NAS Authentication Response and returns the RES*.
 // (TS 24.501 Section 8.2.2)
+// The auth response parameter is optional (IEI 0x2D, TLV-E format).
 func DecodeAuthenticationResponse(data []byte) ([]byte, error) {
-	if len(data) < 5 {
+	if len(data) < 3 {
 		return nil, fmt.Errorf("NAS authentication response too short: %d bytes", len(data))
 	}
 	if data[0] != EPD5GMM {
@@ -287,14 +288,38 @@ func DecodeAuthenticationResponse(data []byte) ([]byte, error) {
 	if data[2] != MsgTypeAuthenticationResponse {
 		return nil, fmt.Errorf("unexpected message type: 0x%02x, want 0x%02x", data[2], MsgTypeAuthenticationResponse)
 	}
-	// Authentication response parameter (LV-E: 2-byte length + value)
-	paramLen := int(binary.BigEndian.Uint16(data[3:5]))
-	if len(data) < 5+paramLen {
-		return nil, fmt.Errorf("authentication response parameter length %d exceeds data", paramLen)
+
+	// Parse optional IEs after header (byte 3+)
+	offset := 3
+	for offset < len(data) {
+		iei := data[offset]
+		switch iei {
+		case 0x2D: // Authentication response parameter (TLV-E: IEI + 2-byte length + value)
+			offset++
+			if offset+2 > len(data) {
+				return nil, fmt.Errorf("auth response parameter truncated at length")
+			}
+			paramLen := int(binary.BigEndian.Uint16(data[offset : offset+2]))
+			offset += 2
+			if offset+paramLen > len(data) {
+				return nil, fmt.Errorf("auth response parameter length %d exceeds data", paramLen)
+			}
+			res := make([]byte, paramLen)
+			copy(res, data[offset:offset+paramLen])
+			return res, nil
+		case 0x78: // EAP message (TLV-E), skip
+			offset++
+			if offset+2 > len(data) {
+				return nil, fmt.Errorf("EAP message truncated")
+			}
+			eapLen := int(binary.BigEndian.Uint16(data[offset : offset+2]))
+			offset += 2 + eapLen
+		default:
+			return nil, fmt.Errorf("unknown IE 0x%02x in authentication response", iei)
+		}
 	}
-	res := make([]byte, paramLen)
-	copy(res, data[5:5+paramLen])
-	return res, nil
+
+	return nil, fmt.Errorf("no authentication response parameter found")
 }
 
 // DecodePDUSessionEstablishmentRequest decodes a NAS PDU Session Establishment Request.
@@ -429,20 +454,64 @@ func DecodeULNASTransport(data []byte) (payloadContainerType uint8, pduSessionID
 	return
 }
 
+// StripSecurityHeader strips the NAS security header from a protected NAS message.
+// If the message is plain (security header type = 0x00), returns it unchanged.
+// For protected NAS: [EPD, SecHdr, MAC(4), SQN(1), InnerNAS...] → InnerNAS
+func StripSecurityHeader(data []byte) []byte {
+	if len(data) < 2 {
+		return data
+	}
+	secHdrType := data[1] & 0x0F
+	if secHdrType == SecurityHeaderPlain {
+		return data
+	}
+	// Protected NAS: EPD(1) + SecHdr(1) + MAC(4) + SQN(1) = 7 bytes header
+	if len(data) <= 7 {
+		return data
+	}
+	return data[7:]
+}
+
+// WrapSecurityHeader wraps a plain NAS message with a security header.
+// For null security (5GEA0/5GIA0), MAC is all zeros.
+func WrapSecurityHeader(inner []byte, secHdrType byte, sqn byte) []byte {
+	outer := make([]byte, 0, 7+len(inner))
+	outer = append(outer, EPD5GMM, secHdrType)
+	outer = append(outer, 0x00, 0x00, 0x00, 0x00) // MAC (zeros for null integrity)
+	outer = append(outer, sqn)
+	outer = append(outer, inner...)
+	return outer
+}
+
 // --- Internal encoding/decoding helpers ---
 
 func decodeSUCI(data []byte) string {
-	// Simplified SUCI decoding: extract IMSI digits from BCD-encoded bytes
-	// Real implementation: TS 24.501 Section 9.11.3.4, SUCI structure
-	if len(data) < 8 {
+	// SUCI decoding per TS 24.501 Section 9.11.3.4:
+	//   Byte 0: SUPI format (bits 7-4) | Type of identity (bits 3-0)
+	//   Bytes 1-3: MCC/MNC in BCD (same encoding as PLMN identity)
+	//   Bytes 4-5: Routing indicator (BCD)
+	//   Byte 6: Protection scheme ID
+	//   Byte 7: Home network public key identifier
+	//   Bytes 8+: Scheme output (MSIN in BCD for null scheme)
+	if len(data) < 9 {
 		return "unknown-suci"
 	}
-	// SUCI: type(1) + MCC/MNC(3) + routing_indicator(2) + scheme(1) + scheme_output
-	mcc := fmt.Sprintf("%d%d%d", (data[1]>>4)&0x0f, data[2]&0x0f, (data[2]>>4)&0x0f)
-	mnc := fmt.Sprintf("%d%d", data[3]&0x0f, (data[3]>>4)&0x0f)
-	// Extract MSIN from remaining BCD digits
+
+	// MCC: digit1=low(byte1), digit2=high(byte1), digit3=low(byte2)
+	mcc := fmt.Sprintf("%d%d%d", data[1]&0x0f, (data[1]>>4)&0x0f, data[2]&0x0f)
+
+	// MNC: check if 2-digit (high nibble of byte2 == 0xF) or 3-digit
+	mnc3 := (data[2] >> 4) & 0x0f
+	var mnc string
+	if mnc3 == 0x0f {
+		mnc = fmt.Sprintf("%d%d", data[3]&0x0f, (data[3]>>4)&0x0f)
+	} else {
+		mnc = fmt.Sprintf("%d%d%d", data[3]&0x0f, (data[3]>>4)&0x0f, mnc3)
+	}
+
+	// MSIN starts at byte 8 (after Home Network Public Key Identifier at byte 7)
 	msin := ""
-	for i := 7; i < len(data); i++ {
+	for i := 8; i < len(data); i++ {
 		msin += fmt.Sprintf("%d", data[i]&0x0f)
 		if (data[i]>>4)&0x0f != 0x0f {
 			msin += fmt.Sprintf("%d", (data[i]>>4)&0x0f)

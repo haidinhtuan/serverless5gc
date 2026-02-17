@@ -5,25 +5,24 @@ import (
 )
 
 func TestDecodeRegistrationRequest(t *testing.T) {
-	// Build a minimal Registration Request:
-	// EPD(0x7E) | SecHdr(0x00) | MsgType(0x41) | RegType+ngKSI
-	// | MobileIdentity(len=5, type=SUCI, dummy data)
+	// Build a minimal Registration Request with proper SUCI encoding:
+	// SUCI: type(1) + PLMN(3) + routing(2) + scheme(1) + HN-pubkey-id(1) + MSIN
+	// MCC=001, MNC=01, MSIN=0000000001
 	data := []byte{
 		0x7E,       // EPD: 5GMM
 		0x00,       // Security Header: plain
 		0x41,       // Message Type: Registration Request
 		0x01,       // Registration Type: Initial(1) | ngKSI=0
-		0x00, 0x08, // Mobile Identity Length = 8
-		0x01,                                     // Type: SUCI
-		0x10, 0x10, 0x10,                         // MCC=001, MNC=01 (BCD)
-		0x00, 0x00,                               // Routing indicator
-		0x00,                                     // Protection scheme
-		0x10, 0x32, 0x54, 0x76, 0x98, 0x10, 0xF0, // MSIN digits (BCD) - extra bytes
+		0x00, 0x0D, // Mobile Identity Length = 13
+		0x01,                   // Type: SUCI (IMSI format)
+		0x00, 0xF1, 0x10,     // PLMN: MCC=001, MNC=01
+		0x00, 0x00,            // Routing indicator
+		0x00,                  // Protection scheme: null
+		0x00,                  // Home network public key identifier
+		0x00, 0x00, 0x00, 0x00, 0x10, // MSIN: 0000000001 in BCD
 	}
-	// Pad to minimum length
-	data = append(data, make([]byte, 4)...)
 
-	req, err := DecodeRegistrationRequest(data[:14])
+	req, err := DecodeRegistrationRequest(data)
 	if err != nil {
 		t.Fatalf("DecodeRegistrationRequest error: %v", err)
 	}
@@ -35,6 +34,11 @@ func TestDecodeRegistrationRequest(t *testing.T) {
 	}
 	if req.NgKSI != 0 {
 		t.Errorf("NgKSI = %d, want 0", req.NgKSI)
+	}
+	// Verify SUPI extraction: should be "imsi-00101" + MSIN digits
+	want := "imsi-001010000000001"
+	if req.MobileIdentity.Value != want {
+		t.Errorf("MobileIdentity.Value = %q, want %q", req.MobileIdentity.Value, want)
 	}
 }
 
@@ -180,13 +184,14 @@ func TestDecodeRegistrationRequest_WithUESecCap(t *testing.T) {
 		0x00,       // Security Header: plain
 		0x41,       // Message Type: Registration Request
 		0x01,       // Registration Type: Initial(1) | ngKSI=0
-		0x00, 0x08, // Mobile Identity Length = 8
+		0x00, 0x09, // Mobile Identity Length = 9
 		0x01,                   // Type: SUCI
-		0x10, 0x10, 0x10,     // MCC/MNC
+		0x00, 0xF1, 0x10,     // PLMN: MCC=001, MNC=01
 		0x00, 0x00,            // Routing indicator
 		0x00,                  // Protection scheme
-		0x10,                  // MSIN
-		// Optional IE: UE Security Capability (Tag 0x2E)
+		0x00,                  // HN public key ID
+		0x10,                  // MSIN (1 byte)
+		// Optional IE (Tag)
 		0x2E,       // Tag
 		0x02,       // Length = 2
 		0xE0,       // EA0=1, EA1=1, EA2=1, EA3=0
@@ -218,12 +223,13 @@ func TestDecodeRegistrationRequest_WithRequestedNSSAI(t *testing.T) {
 		0x00,       // Security Header: plain
 		0x41,       // Message Type: Registration Request
 		0x01,       // Registration Type: Initial(1) | ngKSI=0
-		0x00, 0x08, // Mobile Identity Length = 8
+		0x00, 0x09, // Mobile Identity Length = 9
 		0x01,                   // Type: SUCI
-		0x10, 0x10, 0x10,     // MCC/MNC
+		0x00, 0xF1, 0x10,     // PLMN: MCC=001, MNC=01
 		0x00, 0x00,            // Routing indicator
 		0x00,                  // Protection scheme
-		0x10,                  // MSIN
+		0x00,                  // HN public key ID
+		0x10,                  // MSIN (1 byte)
 		// Optional IE: Requested NSSAI (Tag 0x15)
 		0x15,       // Tag
 		0x07,       // Length = 7 (one SST-only: 2 bytes, one SST+SD: 5 bytes)
@@ -450,7 +456,8 @@ func TestDecodeAuthenticationResponse(t *testing.T) {
 		0x7E,       // EPD
 		0x00,       // Security header
 		0x57,       // Message type: Authentication Response
-		0x00, 0x10, // Length = 16
+		0x2D,       // IEI: Authentication response parameter
+		0x00, 0x10, // Length = 16 (TLV-E: 2-byte length)
 	}
 	data = append(data, res...)
 
@@ -623,6 +630,69 @@ func TestDecodeULNASTransport_WrongMsgType(t *testing.T) {
 	_, _, _, _, _, err := DecodeULNASTransport(data)
 	if err == nil {
 		t.Fatal("expected error for wrong message type")
+	}
+}
+
+func TestStripSecurityHeader(t *testing.T) {
+	// Plain NAS: should return unchanged
+	plain := []byte{0x7E, 0x00, 0x5E, 0x01, 0x02}
+	got := StripSecurityHeader(plain)
+	if len(got) != len(plain) {
+		t.Errorf("plain NAS: got len %d, want %d", len(got), len(plain))
+	}
+
+	// Protected NAS: EPD(1) + SecHdr(1) + MAC(4) + SQN(1) + inner
+	inner := []byte{0x7E, 0x00, 0x5E, 0x01, 0x02}
+	protected := []byte{0x7E, 0x04, 0x00, 0x00, 0x00, 0x00, 0x00} // 7-byte header
+	protected = append(protected, inner...)
+	got = StripSecurityHeader(protected)
+	if len(got) != len(inner) {
+		t.Fatalf("protected NAS: got len %d, want %d", len(got), len(inner))
+	}
+	for i := range inner {
+		if got[i] != inner[i] {
+			t.Errorf("inner[%d] = 0x%02x, want 0x%02x", i, got[i], inner[i])
+		}
+	}
+}
+
+func TestWrapSecurityHeader(t *testing.T) {
+	inner := []byte{0x7E, 0x00, 0x5D, 0x22, 0x01, 0x02}
+	got := WrapSecurityHeader(inner, SecurityHeaderIntegrityProtectedNewCtx, 0x00)
+	if len(got) != 7+len(inner) {
+		t.Fatalf("wrapped len = %d, want %d", len(got), 7+len(inner))
+	}
+	if got[0] != EPD5GMM {
+		t.Errorf("EPD = 0x%02x, want 0x%02x", got[0], EPD5GMM)
+	}
+	if got[1] != SecurityHeaderIntegrityProtectedNewCtx {
+		t.Errorf("SecHdr = 0x%02x, want 0x%02x", got[1], SecurityHeaderIntegrityProtectedNewCtx)
+	}
+	// MAC should be zeros
+	for i := 2; i < 6; i++ {
+		if got[i] != 0x00 {
+			t.Errorf("MAC[%d] = 0x%02x, want 0x00", i-2, got[i])
+		}
+	}
+	if got[6] != 0x00 {
+		t.Errorf("SQN = 0x%02x, want 0x00", got[6])
+	}
+	// Inner should match
+	for i := range inner {
+		if got[7+i] != inner[i] {
+			t.Errorf("inner[%d] = 0x%02x, want 0x%02x", i, got[7+i], inner[i])
+		}
+	}
+
+	// Roundtrip: wrap then strip should give back original
+	stripped := StripSecurityHeader(got)
+	if len(stripped) != len(inner) {
+		t.Fatalf("roundtrip len = %d, want %d", len(stripped), len(inner))
+	}
+	for i := range inner {
+		if stripped[i] != inner[i] {
+			t.Errorf("roundtrip[%d] = 0x%02x, want 0x%02x", i, stripped[i], inner[i])
+		}
 	}
 }
 
