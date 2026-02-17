@@ -20,7 +20,7 @@ The system follows a **Function-per-Procedure** model: each 3GPP procedure (e.g.
                                                                     │  ausf-auth       │
                                                                     │  udm-auth-data   │
                                                                     │  nrf-discover    │
-                                                                    │  ...20 functions │
+                                                                    │  ...31 functions │
                                                                     └────────┬─────────┘
                                                                              │
                            ┌─────────────────────────────────────────────────┘
@@ -41,7 +41,7 @@ The system follows a **Function-per-Procedure** model: each 3GPP procedure (e.g.
 
 ## 5G Network Functions
 
-The system implements 8 NFs decomposed into 21 OpenFaaS functions:
+The system implements 12 NFs decomposed into 31 OpenFaaS functions:
 
 | NF | Functions | 3GPP Reference |
 |----|-----------|----------------|
@@ -53,6 +53,10 @@ The system implements 8 NFs decomposed into 21 OpenFaaS functions:
 | **NRF** | `nrf-register`, `nrf-discover`, `nrf-status-notify` | TS 29.510 |
 | **PCF** | `pcf-policy-create`, `pcf-policy-get` | TS 29.512 |
 | **NSSF** | `nssf-slice-select` | TS 29.531 |
+| **NWDAF** | `nwdaf-analytics-subscribe`, `nwdaf-data-collect` | TS 29.520 |
+| **CHF** | `chf-charging-create`, `chf-charging-update`, `chf-charging-release` | TS 32.291 |
+| **NSACF** | `nsacf-slice-availability-check`, `nsacf-update-counters` | TS 29.536 |
+| **BSF** | `bsf-binding-register`, `bsf-binding-discover`, `bsf-binding-deregister` | TS 29.521 |
 
 ### 3GPP Compliance
 
@@ -100,7 +104,7 @@ serverless5gc/
 │   └── sctp-proxy/              # SCTP-HTTP bridge binary
 │       ├── main.go              # SCTP listener, CLI flags
 │       └── proxy.go             # NGAP routing, HTTP forwarding
-├── functions/                   # 21 OpenFaaS function handlers
+├── functions/                   # 31 OpenFaaS function handlers
 │   ├── amf/
 │   │   ├── registration/        # TS 23.502 4.2.2.2 Initial Registration
 │   │   ├── deregistration/      # TS 23.502 4.2.2.3 Deregistration
@@ -128,8 +132,22 @@ serverless5gc/
 │   ├── pcf/
 │   │   ├── policy-create/       # SM policy creation (QoS per slice)
 │   │   └── policy-get/          # Policy retrieval
-│   └── nssf/
+│   ├── nssf/
 │       └── slice-select/        # Network slice selection (NSSAI)
+│   ├── nwdaf/                   # R17: Network Data Analytics (TS 29.520)
+│   │   ├── analytics-subscribe/ # Analytics subscription + snapshot
+│   │   └── data-collect/        # NF/slice metrics collection
+│   ├── chf/                     # R17: Charging Function (TS 32.291)
+│   │   ├── charging-create/     # Create charging session
+│   │   ├── charging-update/     # Report usage, request quota
+│   │   └── charging-release/    # Finalize CDR
+│   ├── nsacf/                   # R17: Slice Admission Control (TS 29.536)
+│   │   ├── slice-availability-check/ # Check slice capacity
+│   │   └── update-counters/     # Increment/decrement UE/session counters
+│   └── bsf/                     # R17: Binding Support Function (TS 29.521)
+│       ├── binding-register/    # Register PCF binding
+│       ├── binding-discover/    # Discover PCF by IP/SUPI
+│       └── binding-deregister/  # Remove binding
 ├── pkg/
 │   ├── crypto/                  # Milenage 5G-AKA (TS 35.208)
 │   ├── models/                  # 3GPP data types (UEContext, PDUSession, etc.)
@@ -141,7 +159,7 @@ serverless5gc/
 │   └── statemachine/            # UE RM/CM state machine (TS 23.502)
 ├── deploy/
 │   ├── openfaas/
-│   │   ├── stack.yml            # All 21 function definitions
+│   │   ├── stack.yml            # All 31 function definitions
 │   │   └── Dockerfile.template  # Multi-stage Go builder
 │   ├── k3s/
 │   │   ├── redis-deployment.yaml
@@ -197,7 +215,7 @@ serverless5gc/
 ### Build
 
 ```bash
-# Run unit tests (178 tests across 27 packages)
+# Run unit tests (255 tests across 38 packages)
 make test
 
 # Build the SCTP proxy
@@ -309,7 +327,7 @@ python charts.py
 
 ## Testing
 
-The project has 178 unit tests across 27 test packages:
+The project has 255 unit tests across 38 test packages:
 
 ```bash
 # Run all unit tests
@@ -343,6 +361,10 @@ go test ./functions/amf/registration/... -v
 | NRF functions | 7 | Register, discover, notify |
 | Auth functions | 24 | UDR/UDM/AUSF chain, 5G-AKA |
 | PCF/NSSF functions | 12 | Policy, slice selection |
+| NWDAF functions | 15 | Analytics subscribe, data collect |
+| CHF functions | 15 | Charging create/update/release, CDR |
+| NSACF functions | 16 | Slice admission check, counter update |
+| BSF functions | 17 | Binding register/discover/deregister |
 | NAS timers | 5 | Timer values per TS 24.501 |
 | 3GPP compliance | 9 | SBI paths, cause codes, state machine |
 
@@ -385,7 +407,11 @@ The custom cost exporter (`eval/scripts/cost-exporter/`) exposes projected Lambd
 | [TS 29.509](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=3347) | AUSF Services | Nausf_UEAuthentication service |
 | [TS 29.510](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=3348) | NRF Services | Nnrf_NFManagement, Nnrf_NFDiscovery |
 | [TS 29.512](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=3350) | PCF Services | Npcf_SMPolicyControl |
+| [TS 29.520](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=3195) | NWDAF Services | Nnwdaf_AnalyticsSubscription, DataManagement |
+| [TS 29.521](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=3359) | BSF Services | Nbsf_Management (PCF binding) |
 | [TS 29.531](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=3369) | NSSF Services | Nnssf_NSSelection |
+| [TS 29.536](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=3374) | NSACF Services | Nnsacf_SliceEventExposure (admission control) |
+| [TS 32.291](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=3408) | CHF Services | Nchf_ConvergedCharging |
 | [TS 33.501](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=3169) | Security Architecture | 5G-AKA, NAS security |
 | [TS 35.208](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=2276) | Milenage Algorithm | Authentication algorithm test vectors |
 | [TS 38.412](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=3228) | NG Signalling Transport | SCTP transport for NGAP |
