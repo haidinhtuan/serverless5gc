@@ -305,7 +305,7 @@ METRICS=(
 
 for METRIC in "${METRICS[@]}"; do
     echo "  Querying ${METRIC}..."
-    curl -s "${PROM_URL}/api/v1/query_range?query=${METRIC}&start=${START_TIME}&end=${END_TIME}&step=5s" \
+    curl -s -G "${PROM_URL}/api/v1/query_range" --data-urlencode "query=${METRIC}" --data-urlencode "start=${START_TIME}" --data-urlencode "end=${END_TIME}" --data-urlencode "step=5s" \
         > "${RESULTS_DIR}/${METRIC}.json" || echo "  WARNING: Failed to query ${METRIC}"
 done
 
