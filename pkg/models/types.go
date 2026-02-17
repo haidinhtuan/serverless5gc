@@ -86,18 +86,20 @@ type SNSSAI struct {
 
 // PDUSession represents a PDU session in the SMF, stored in Redis.
 type PDUSession struct {
-	ID        string    `json:"id"`
-	SUPI      string    `json:"supi"`
-	SNSSAI    SNSSAI    `json:"snssai"`
-	DNN       string    `json:"dnn"`
-	PDUType   string    `json:"pdu_type"` // IPv4, IPv6, IPv4v6
-	UEAddress string    `json:"ue_address"`
-	UPFID     string    `json:"upf_id"`
-	State     string    `json:"state"` // ACTIVE, INACTIVE, RELEASED
-	QFI       uint8     `json:"qfi"`
-	AMBRUL    uint64    `json:"ambr_ul"`
-	AMBRDL    uint64    `json:"ambr_dl"`
-	CreatedAt time.Time `json:"created_at"`
+	ID           string    `json:"id"`
+	SUPI         string    `json:"supi"`
+	SNSSAI       SNSSAI    `json:"snssai"`
+	DNN          string    `json:"dnn"`
+	PDUType      string    `json:"pdu_type"` // IPv4, IPv6, IPv4v6
+	UEAddress    string    `json:"ue_address"`
+	UPFID        string    `json:"upf_id"`
+	State        string    `json:"state"` // ACTIVE, INACTIVE, RELEASED
+	QFI          uint8     `json:"qfi"`
+	AMBRUL       uint64    `json:"ambr_ul"`
+	AMBRDL       uint64    `json:"ambr_dl"`
+	ChargingID   string    `json:"charging_id,omitempty"`    // R17: CHF charging session ID
+	BSFBindingID string    `json:"bsf_binding_id,omitempty"` // R17: BSF PCF binding ID
+	CreatedAt    time.Time `json:"created_at"`
 }
 
 // NFProfile represents an NF instance in the NRF per TS 29.510 Section 6.1.6.2.2.
@@ -155,4 +157,93 @@ type SMPolicyData struct {
 	SNSSAI SNSSAI `json:"snssai"`
 	DNN    string `json:"dnn"`
 	QoSRef int    `json:"qos_ref"`
+}
+
+// --- R17 Model Types ---
+
+// ChargingSession represents a converged charging session per TS 32.291.
+type ChargingSession struct {
+	ChargingID      string    `json:"charging_id"`
+	SUPI            string    `json:"supi"`
+	PDUSessionID    string    `json:"pdu_session_id"`
+	DNN             string    `json:"dnn"`
+	SNSSAI          SNSSAI    `json:"snssai"`
+	ChargingType    string    `json:"charging_type"` // ONLINE, OFFLINE
+	State           string    `json:"state"`         // ACTIVE, RELEASED
+	VolumeUplink    uint64    `json:"volume_uplink"`
+	VolumeDownlink  uint64    `json:"volume_downlink"`
+	GrantedUnits    uint64    `json:"granted_units"`
+	CreatedAt       time.Time `json:"created_at"`
+	LastUpdated     time.Time `json:"last_updated"`
+}
+
+// ChargingDataRecord represents a finalized CDR per TS 32.298.
+type ChargingDataRecord struct {
+	RecordID       string    `json:"record_id"`
+	ChargingID     string    `json:"charging_id"`
+	SUPI           string    `json:"supi"`
+	PDUSessionID   string    `json:"pdu_session_id"`
+	DNN            string    `json:"dnn"`
+	SNSSAI         SNSSAI    `json:"snssai"`
+	VolumeUplink   uint64    `json:"volume_uplink"`
+	VolumeDownlink uint64    `json:"volume_downlink"`
+	Duration       int64     `json:"duration_seconds"`
+	StartTime      time.Time `json:"start_time"`
+	EndTime        time.Time `json:"end_time"`
+}
+
+// SliceAdmissionPolicy defines admission limits per S-NSSAI per TS 29.536.
+type SliceAdmissionPolicy struct {
+	SST           int32  `json:"sst"`
+	SD            string `json:"sd,omitempty"`
+	MaxUEs        int64  `json:"max_ues"`
+	MaxSessions   int64  `json:"max_sessions"`
+}
+
+// SliceCounters tracks current UE/session counts per S-NSSAI for NSACF.
+type SliceCounters struct {
+	SST            int32  `json:"sst"`
+	SD             string `json:"sd,omitempty"`
+	CurrentUEs     int64  `json:"current_ues"`
+	CurrentSessions int64 `json:"current_sessions"`
+}
+
+// PCFBinding represents a PCF-to-PDU-session binding per TS 29.521.
+type PCFBinding struct {
+	BindingID    string `json:"binding_id"`
+	SUPI         string `json:"supi"`
+	DNN          string `json:"dnn"`
+	SNSSAI       SNSSAI `json:"snssai"`
+	PCFAddress   string `json:"pcf_address"`
+	UEAddress    string `json:"ue_address,omitempty"`
+	PDUSessionID string `json:"pdu_session_id"`
+}
+
+// AnalyticsSubscription represents an analytics subscription per TS 29.520.
+type AnalyticsSubscription struct {
+	SubscriptionID string `json:"subscription_id"`
+	EventID        string `json:"event_id"` // NF_LOAD, SLICE_LOAD, UE_MOBILITY
+	TargetNF       string `json:"target_nf,omitempty"`
+	SNSSAI         *SNSSAI `json:"snssai,omitempty"`
+	NotificationURI string `json:"notification_uri,omitempty"`
+}
+
+// NFLoadInfo holds NF load metrics collected by NWDAF.
+type NFLoadInfo struct {
+	NFInstanceID string    `json:"nf_instance_id"`
+	NFType       string    `json:"nf_type"`
+	CPUUsage     float64   `json:"cpu_usage"`
+	MemUsage     float64   `json:"mem_usage"`
+	NfLoad       int       `json:"nf_load"` // 0-100 percentage
+	Timestamp    time.Time `json:"timestamp"`
+}
+
+// SliceLoadInfo holds per-slice load metrics collected by NWDAF.
+type SliceLoadInfo struct {
+	SST            int32     `json:"sst"`
+	SD             string    `json:"sd,omitempty"`
+	CurrentUEs     int64     `json:"current_ues"`
+	CurrentSessions int64    `json:"current_sessions"`
+	MeanNFLoad     float64   `json:"mean_nf_load"`
+	Timestamp      time.Time `json:"timestamp"`
 }
