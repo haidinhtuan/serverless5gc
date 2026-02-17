@@ -1,5 +1,5 @@
 #!/bin/bash
-# Builds Docker images for all 20 OpenFaaS functions.
+# Builds Docker images for all 31 OpenFaaS functions.
 # Each function is package function with a Handle() method; this script
 # generates a main.go wrapper for each and builds via Dockerfile.template.
 #
@@ -51,6 +51,16 @@ declare -a FUNCTIONS=(
     "pcf-policy-create:functions/pcf/policy-create"
     "pcf-policy-get:functions/pcf/policy-get"
     "nssf-slice-select:functions/nssf/slice-select"
+    "nwdaf-analytics-subscribe:functions/nwdaf/analytics-subscribe"
+    "nwdaf-data-collect:functions/nwdaf/data-collect"
+    "chf-charging-create:functions/chf/charging-create"
+    "chf-charging-update:functions/chf/charging-update"
+    "chf-charging-release:functions/chf/charging-release"
+    "nsacf-slice-availability-check:functions/nsacf/slice-availability-check"
+    "nsacf-update-counters:functions/nsacf/update-counters"
+    "bsf-binding-register:functions/bsf/binding-register"
+    "bsf-binding-discover:functions/bsf/binding-discover"
+    "bsf-binding-deregister:functions/bsf/binding-deregister"
 )
 
 generate_main() {

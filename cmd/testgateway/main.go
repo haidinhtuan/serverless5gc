@@ -47,6 +47,24 @@ import (
 
 	// NSSF functions (redis-backed)
 	nssfSliceSelect "github.com/tdinh/serverless5gc/functions/nssf/slice-select"
+
+	// NWDAF functions (redis-backed, R17)
+	nwdafAnalyticsSubscribe "github.com/tdinh/serverless5gc/functions/nwdaf/analytics-subscribe"
+	nwdafDataCollect        "github.com/tdinh/serverless5gc/functions/nwdaf/data-collect"
+
+	// CHF functions (redis-backed, R17)
+	chfChargingCreate  "github.com/tdinh/serverless5gc/functions/chf/charging-create"
+	chfChargingUpdate  "github.com/tdinh/serverless5gc/functions/chf/charging-update"
+	chfChargingRelease "github.com/tdinh/serverless5gc/functions/chf/charging-release"
+
+	// NSACF functions (redis-backed, R17)
+	nsacfSliceAvailabilityCheck "github.com/tdinh/serverless5gc/functions/nsacf/slice-availability-check"
+	nsacfUpdateCounters         "github.com/tdinh/serverless5gc/functions/nsacf/update-counters"
+
+	// BSF functions (redis-backed, R17)
+	bsfBindingRegister   "github.com/tdinh/serverless5gc/functions/bsf/binding-register"
+	bsfBindingDiscover   "github.com/tdinh/serverless5gc/functions/bsf/binding-discover"
+	bsfBindingDeregister "github.com/tdinh/serverless5gc/functions/bsf/binding-deregister"
 )
 
 // wrapHandler converts an OpenFaaS function handler into a standard http.HandlerFunc.
@@ -121,6 +139,7 @@ func main() {
 	amfRegistration.SetSBI(sbiClient)
 
 	amfDeregistration.SetStore(redisStore)
+	amfDeregistration.SetSBI(sbiClient)
 
 	amfServiceRequest.SetStore(redisStore)
 
@@ -140,6 +159,7 @@ func main() {
 	smfPduSessionUpdate.SetStore(redisStore)
 
 	smfPduSessionRelease.SetStore(redisStore)
+	smfPduSessionRelease.SetSBI(sbiClient)
 
 	smfN4SessionSetup.SetStore(redisStore)
 
@@ -160,6 +180,24 @@ func main() {
 
 	// --- Configure NSSF function (redis-backed) ---
 	nssfSliceSelect.SetStore(redisStore)
+
+	// --- Configure NWDAF functions (redis-backed, R17) ---
+	nwdafAnalyticsSubscribe.SetStore(redisStore)
+	nwdafDataCollect.SetStore(redisStore)
+
+	// --- Configure CHF functions (redis-backed, R17) ---
+	chfChargingCreate.SetStore(redisStore)
+	chfChargingUpdate.SetStore(redisStore)
+	chfChargingRelease.SetStore(redisStore)
+
+	// --- Configure NSACF functions (redis-backed, R17) ---
+	nsacfSliceAvailabilityCheck.SetStore(redisStore)
+	nsacfUpdateCounters.SetStore(redisStore)
+
+	// --- Configure BSF functions (redis-backed, R17) ---
+	bsfBindingRegister.SetStore(redisStore)
+	bsfBindingDiscover.SetStore(redisStore)
+	bsfBindingDeregister.SetStore(redisStore)
 
 	// --- Register HTTP routes matching OpenFaaS function names from stack.yml ---
 	mux := http.NewServeMux()
@@ -207,10 +245,28 @@ func main() {
 	// NSSF
 	mux.HandleFunc("/function/nssf-slice-select", wrapHandler(nssfSliceSelect.Handle))
 
+	// NWDAF (R17)
+	mux.HandleFunc("/function/nwdaf-analytics-subscribe", wrapHandler(nwdafAnalyticsSubscribe.Handle))
+	mux.HandleFunc("/function/nwdaf-data-collect", wrapHandler(nwdafDataCollect.Handle))
+
+	// CHF (R17)
+	mux.HandleFunc("/function/chf-charging-create", wrapHandler(chfChargingCreate.Handle))
+	mux.HandleFunc("/function/chf-charging-update", wrapHandler(chfChargingUpdate.Handle))
+	mux.HandleFunc("/function/chf-charging-release", wrapHandler(chfChargingRelease.Handle))
+
+	// NSACF (R17)
+	mux.HandleFunc("/function/nsacf-slice-availability-check", wrapHandler(nsacfSliceAvailabilityCheck.Handle))
+	mux.HandleFunc("/function/nsacf-update-counters", wrapHandler(nsacfUpdateCounters.Handle))
+
+	// BSF (R17)
+	mux.HandleFunc("/function/bsf-binding-register", wrapHandler(bsfBindingRegister.Handle))
+	mux.HandleFunc("/function/bsf-binding-discover", wrapHandler(bsfBindingDiscover.Handle))
+	mux.HandleFunc("/function/bsf-binding-deregister", wrapHandler(bsfBindingDeregister.Handle))
+
 	addr := ":8080"
 	log.Printf("Test gateway listening on %s", addr)
 	log.Printf("Redis: %s | etcd: %s", redisAddr, etcdEndpoint)
-	log.Printf("Registered 21 function handlers")
+	log.Printf("Registered 31 function handlers")
 	if err := http.ListenAndServe(addr, mux); err != nil {
 		log.Fatalf("Server failed: %v", err)
 	}

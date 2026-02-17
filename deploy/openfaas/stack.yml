@@ -175,3 +175,85 @@ functions:
     image: serverless5gc/nssf-slice-select:latest
     environment:
       REDIS_ADDR: redis:6379
+
+  # NWDAF - Network Data Analytics (R17, TS 29.520)
+  nwdaf-analytics-subscribe:
+    lang: dockerfile
+    handler: ./functions/nwdaf/analytics-subscribe
+    image: serverless5gc/nwdaf-analytics-subscribe:latest
+    environment:
+      REDIS_ADDR: redis:6379
+
+  nwdaf-data-collect:
+    lang: dockerfile
+    handler: ./functions/nwdaf/data-collect
+    image: serverless5gc/nwdaf-data-collect:latest
+    environment:
+      REDIS_ADDR: redis:6379
+
+  # CHF - Charging Function (R17, TS 32.291)
+  chf-charging-create:
+    lang: dockerfile
+    handler: ./functions/chf/charging-create
+    image: serverless5gc/chf-charging-create:latest
+    environment:
+      REDIS_ADDR: redis:6379
+      ENABLE_CHARGING: "true"
+
+  chf-charging-update:
+    lang: dockerfile
+    handler: ./functions/chf/charging-update
+    image: serverless5gc/chf-charging-update:latest
+    environment:
+      REDIS_ADDR: redis:6379
+      ENABLE_CHARGING: "true"
+
+  chf-charging-release:
+    lang: dockerfile
+    handler: ./functions/chf/charging-release
+    image: serverless5gc/chf-charging-release:latest
+    environment:
+      REDIS_ADDR: redis:6379
+      ENABLE_CHARGING: "true"
+
+  # NSACF - Slice Admission Control (R17, TS 29.536)
+  nsacf-slice-availability-check:
+    lang: dockerfile
+    handler: ./functions/nsacf/slice-availability-check
+    image: serverless5gc/nsacf-slice-availability-check:latest
+    environment:
+      REDIS_ADDR: redis:6379
+      ENABLE_NSACF: "true"
+
+  nsacf-update-counters:
+    lang: dockerfile
+    handler: ./functions/nsacf/update-counters
+    image: serverless5gc/nsacf-update-counters:latest
+    environment:
+      REDIS_ADDR: redis:6379
+      ENABLE_NSACF: "true"
+
+  # BSF - Binding Support Function (R17, TS 29.521)
+  bsf-binding-register:
+    lang: dockerfile
+    handler: ./functions/bsf/binding-register
+    image: serverless5gc/bsf-binding-register:latest
+    environment:
+      REDIS_ADDR: redis:6379
+      ENABLE_BSF: "true"
+
+  bsf-binding-discover:
+    lang: dockerfile
+    handler: ./functions/bsf/binding-discover
+    image: serverless5gc/bsf-binding-discover:latest
+    environment:
+      REDIS_ADDR: redis:6379
+      ENABLE_BSF: "true"
+
+  bsf-binding-deregister:
+    lang: dockerfile
+    handler: ./functions/bsf/binding-deregister
+    image: serverless5gc/bsf-binding-deregister:latest
+    environment:
+      REDIS_ADDR: redis:6379
+      ENABLE_BSF: "true"

@@ -44,6 +44,16 @@ IMAGES=(
     "pcf-policy-create"
     "pcf-policy-get"
     "nssf-slice-select"
+    "nwdaf-analytics-subscribe"
+    "nwdaf-data-collect"
+    "chf-charging-create"
+    "chf-charging-update"
+    "chf-charging-release"
+    "nsacf-slice-availability-check"
+    "nsacf-update-counters"
+    "bsf-binding-register"
+    "bsf-binding-discover"
+    "bsf-binding-deregister"
 )
 
 echo "=== Deploying ${#IMAGES[@]} functions to ${VM_IP} ==="
