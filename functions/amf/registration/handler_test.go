@@ -331,6 +331,69 @@ func TestHandle_Registration_InvalidJSON_ProblemDetails(t *testing.T) {
 	}
 }
 
+func TestHandle_Registration_SkipAuth(t *testing.T) {
+	mockStore := state.NewMockKVStore()
+	SetStore(mockStore)
+
+	mock := newMockSBI()
+	mock.responses["udm-get-subscriber-data"] = models.SubscriberData{
+		SUPI: "imsi-001010000000001",
+		AccessAndMobility: &models.AccessMobData{
+			NSSAI:      []models.SNSSAI{{SST: 1, SD: "010203"}},
+			DefaultDNN: "internet",
+		},
+	}
+	SetSBI(mock)
+
+	body, _ := json.Marshal(RegistrationRequest{
+		SUPI:        "imsi-001010000000001",
+		RANUeNgapID: 1,
+		GnbID:       "gnb-001",
+		SkipAuth:    true,
+	})
+
+	resp, err := Handle(handler.Request{Body: body, Method: "POST"})
+	if err != nil {
+		t.Fatalf("Handle error: %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body: %s", resp.StatusCode, http.StatusOK, resp.Body)
+	}
+
+	var regResp RegistrationResponse
+	if err := json.Unmarshal(resp.Body, &regResp); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if regResp.Status != "registered" {
+		t.Errorf("status = %q, want %q", regResp.Status, "registered")
+	}
+	if !regResp.SecurityActivated {
+		t.Error("security_activated = false, want true (auth done externally by proxy)")
+	}
+
+	// No auth-related SBI calls should have been made
+	for _, call := range mock.calls {
+		if call == "amf-auth-initiate" || call == "ausf-authenticate" {
+			t.Errorf("unexpected auth call %q when skip_auth=true", call)
+		}
+	}
+
+	// Verify UE context was still created correctly
+	var ueCtx models.UEContext
+	if err := mockStore.Get(context.Background(), "ue:imsi-001010000000001", &ueCtx); err != nil {
+		t.Fatalf("UE context not found: %v", err)
+	}
+	if ueCtx.RegistrationState != "REGISTERED" {
+		t.Errorf("registration_state = %q, want REGISTERED", ueCtx.RegistrationState)
+	}
+	if ueCtx.SecurityCtx == nil {
+		t.Fatal("SecurityCtx is nil")
+	}
+	if !ueCtx.SecurityCtx.SecurityActivated {
+		t.Error("security_activated = false in stored context")
+	}
+}
+
 func TestHandle_Registration_AMFUeNgapIDUnique(t *testing.T) {
 	mockStore := state.NewMockKVStore()
 	SetStore(mockStore)

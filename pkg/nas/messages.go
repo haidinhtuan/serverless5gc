@@ -255,6 +255,180 @@ func DecodeSecurityModeComplete(data []byte) (*SecurityModeComplete, error) {
 	return smc, nil
 }
 
+// EncodeAuthenticationRequest builds a NAS Authentication Request wire message.
+// (TS 24.501 Section 8.2.1)
+func EncodeAuthenticationRequest(rand []byte, autn []byte) []byte {
+	msg := []byte{
+		EPD5GMM,
+		SecurityHeaderPlain,
+		MsgTypeAuthenticationRequest,
+		0x00,       // ngKSI
+		0x00, 0x02, // ABBA length = 2
+		0x00, 0x00, // ABBA value
+	}
+	// Authentication parameter RAND (IEI 0x21, TV, 17 bytes)
+	msg = append(msg, 0x21)
+	msg = append(msg, rand[:16]...)
+	// Authentication parameter AUTN (IEI 0x20, TLV)
+	msg = append(msg, 0x20, 0x10)
+	msg = append(msg, autn[:16]...)
+	return msg
+}
+
+// DecodeAuthenticationResponse decodes a NAS Authentication Response and returns the RES*.
+// (TS 24.501 Section 8.2.2)
+func DecodeAuthenticationResponse(data []byte) ([]byte, error) {
+	if len(data) < 5 {
+		return nil, fmt.Errorf("NAS authentication response too short: %d bytes", len(data))
+	}
+	if data[0] != EPD5GMM {
+		return nil, fmt.Errorf("unexpected EPD: 0x%02x, want 0x%02x", data[0], EPD5GMM)
+	}
+	if data[2] != MsgTypeAuthenticationResponse {
+		return nil, fmt.Errorf("unexpected message type: 0x%02x, want 0x%02x", data[2], MsgTypeAuthenticationResponse)
+	}
+	// Authentication response parameter (LV-E: 2-byte length + value)
+	paramLen := int(binary.BigEndian.Uint16(data[3:5]))
+	if len(data) < 5+paramLen {
+		return nil, fmt.Errorf("authentication response parameter length %d exceeds data", paramLen)
+	}
+	res := make([]byte, paramLen)
+	copy(res, data[5:5+paramLen])
+	return res, nil
+}
+
+// DecodePDUSessionEstablishmentRequest decodes a NAS PDU Session Establishment Request.
+// (TS 24.501 Section 8.3.1)
+func DecodePDUSessionEstablishmentRequest(data []byte) (pduSessionID uint8, pduSessionType uint8, err error) {
+	if len(data) < 6 {
+		return 0, 0, fmt.Errorf("PDU session establishment request too short: %d bytes", len(data))
+	}
+	if data[0] != EPD5GSM {
+		return 0, 0, fmt.Errorf("unexpected EPD: 0x%02x, want 0x%02x", data[0], EPD5GSM)
+	}
+	if data[3] != MsgTypePDUSessionEstablishmentRequest {
+		return 0, 0, fmt.Errorf("unexpected message type: 0x%02x, want 0x%02x", data[3], MsgTypePDUSessionEstablishmentRequest)
+	}
+
+	pduSessionID = data[1]
+	pduSessionType = 0x01 // default: IPv4
+
+	// Skip header (4) + mandatory integrity protection max data rate (2)
+	offset := 6
+	for offset < len(data) {
+		iei := data[offset]
+		// Type 1 IEs (half-octet)
+		switch iei >> 4 {
+		case 0x09: // PDU session type
+			pduSessionType = iei & 0x0F
+			offset++
+			continue
+		case 0x0A: // SSC mode, skip
+			offset++
+			continue
+		}
+		// TLV IE: IEI(1) + Length(1) + Value(N)
+		offset++
+		if offset >= len(data) {
+			break
+		}
+		offset += 1 + int(data[offset])
+	}
+
+	return pduSessionID, pduSessionType, nil
+}
+
+// DecodeULNASTransport decodes a NAS UL NAS Transport message.
+// (TS 24.501 Section 8.2.10)
+func DecodeULNASTransport(data []byte) (payloadContainerType uint8, pduSessionID uint8, payload []byte, dnn string, snssai *NSSAI, err error) {
+	if len(data) < 6 {
+		err = fmt.Errorf("UL NAS Transport too short: %d bytes", len(data))
+		return
+	}
+	if data[0] != EPD5GMM {
+		err = fmt.Errorf("unexpected EPD: 0x%02x, want 0x%02x", data[0], EPD5GMM)
+		return
+	}
+	if data[2] != MsgTypeULNASTransport {
+		err = fmt.Errorf("unexpected message type: 0x%02x, want 0x%02x", data[2], MsgTypeULNASTransport)
+		return
+	}
+
+	payloadContainerType = data[3] & 0x0F
+
+	// Payload container (LV-E: 2-byte length + value)
+	containerLen := int(binary.BigEndian.Uint16(data[4:6]))
+	if len(data) < 6+containerLen {
+		err = fmt.Errorf("payload container length %d exceeds data", containerLen)
+		return
+	}
+	payload = make([]byte, containerLen)
+	copy(payload, data[6:6+containerLen])
+
+	// Parse optional IEs
+	offset := 6 + containerLen
+	for offset < len(data) {
+		iei := data[offset]
+
+		// Type 1 IEs (half-octet)
+		switch iei >> 4 {
+		case 0x08: // Request type
+			offset++
+			continue
+		case 0x0A: // MA PDU session info
+			offset++
+			continue
+		case 0x0F: // Release assistance indication
+			offset++
+			continue
+		}
+
+		// Type 3 IEs (TV, fixed length)
+		switch iei {
+		case 0x12: // PDU session ID
+			if offset+1 < len(data) {
+				pduSessionID = data[offset+1]
+			}
+			offset += 2
+			continue
+		case 0x59: // Old PDU session ID
+			offset += 2
+			continue
+		}
+
+		// Type 4 IEs (TLV)
+		offset++
+		if offset >= len(data) {
+			break
+		}
+		ieLen := int(data[offset])
+		offset++
+		if offset+ieLen > len(data) {
+			break
+		}
+
+		switch iei {
+		case 0x22: // S-NSSAI
+			if ieLen >= 1 {
+				n := NSSAI{SST: data[offset]}
+				if ieLen >= 4 {
+					n.HasSD = true
+					copy(n.SD[:], data[offset+1:offset+4])
+				}
+				snssai = &n
+			}
+		case 0x25: // DNN
+			if ieLen >= 1 {
+				dnn = decodeDNN(data[offset : offset+ieLen])
+			}
+		}
+
+		offset += ieLen
+	}
+
+	return
+}
+
 // --- Internal encoding/decoding helpers ---
 
 func decodeSUCI(data []byte) string {
@@ -365,6 +539,24 @@ func encodeNSSAIList(nssais []NSSAI) []byte {
 		}
 	}
 	return out
+}
+
+func decodeDNN(data []byte) string {
+	var result string
+	i := 0
+	for i < len(data) {
+		labelLen := int(data[i])
+		i++
+		if i+labelLen > len(data) || labelLen == 0 {
+			break
+		}
+		if result != "" {
+			result += "."
+		}
+		result += string(data[i : i+labelLen])
+		i += labelLen
+	}
+	return result
 }
 
 func encodeGUTIValue(guti string) []byte {

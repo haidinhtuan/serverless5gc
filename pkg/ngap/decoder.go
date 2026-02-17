@@ -1,203 +1,370 @@
 package ngap
 
-import "fmt"
+import (
+	"fmt"
 
-// NGAP procedure codes from 3GPP TS 38.413 Section 9.4.
-const (
-	ProcedureCodeHandoverPreparation        = 0
-	ProcedureCodeHandoverResourceAllocation = 1
-	ProcedureCodePathSwitchRequest          = 3
-	ProcedureCodeDownlinkNASTransport       = 4
-	ProcedureCodeInitialContextSetup        = 14
-	ProcedureCodeInitialUEMessage           = 15
-	ProcedureCodeNGReset                    = 20
-	ProcedureCodeNGSetup                    = 21
-	ProcedureCodePDUSessionResourceSetup    = 26
-	ProcedureCodePDUSessionResourceRelease  = 28
-	ProcedureCodeUEContextRelease           = 41
-	ProcedureCodeUEContextReleaseRequest    = 42
-	ProcedureCodeUplinkNASTransport         = 46
+	"github.com/free5gc/aper"
+	"github.com/free5gc/ngap"
+	"github.com/free5gc/ngap/ngapType"
 )
 
-// NGAP-PDU CHOICE indices (APER-encoded in byte 0).
-const (
-	MessageTypeInitiating   = 0
-	MessageTypeSuccessful   = 1
-	MessageTypeUnsuccessful = 2
-)
-
-// NGAP IE IDs from 3GPP TS 38.413 Section 9.3.
-const (
-	IEID_AMF_UE_NGAP_ID    = 10
-	IEID_RAN_UE_NGAP_ID    = 85
-	IEID_NAS_PDU           = 38
-	IEID_UserLocationInfo  = 121
-	IEID_RRCEstablishCause = 90
-	IEID_FiveG_S_TMSI      = 26
-)
-
-// MessageRoute maps an NGAP message to its target OpenFaaS function.
-type MessageRoute struct {
-	FunctionName  string
-	ProcedureCode int
-	MessageType   int
-}
-
-// NGAPContext carries extracted NGAP IE values alongside routing info.
-// These fields are populated by ParseNGAPMessage from the wire-format PDU
-// per TS 38.413 Section 9.2 (InitialUEMessage, UplinkNASTransport, etc.).
+// NGAPContext carries extracted NGAP IE values from a decoded NGAP PDU.
 type NGAPContext struct {
-	Route          MessageRoute
-	RANUeNgapID    int64  // TS 38.413 Section 9.3.3.2
-	AMFUeNgapID    int64  // TS 38.413 Section 9.3.3.1
-	NASPDU         []byte // TS 38.413 Section 9.3.3.5
-	UserLocationInfo []byte // TS 38.413 Section 9.3.1.16 (raw)
+	PDU             *ngapType.NGAPPDU
+	ProcedureCode   int64
+	MessageType     int // 0=initiating, 1=successful, 2=unsuccessful
+	RANUeNgapID     int64
+	AMFUeNgapID     int64
+	NASPDU          []byte
+	UserLocationInfo []byte // raw for pass-through
 }
 
-// routingTable maps (messageType, procedureCode) to an OpenFaaS function name.
-var routingTable = map[[2]int]string{
-	{MessageTypeInitiating, ProcedureCodeInitialUEMessage}:        "amf-initial-registration",
-	{MessageTypeInitiating, ProcedureCodeUEContextReleaseRequest}: "amf-deregistration",
-	{MessageTypeInitiating, ProcedureCodeUplinkNASTransport}:      "amf-uplink-nas",
-	{MessageTypeInitiating, ProcedureCodeNGSetup}:                 "amf-ng-setup",
-	{MessageTypeInitiating, ProcedureCodeHandoverPreparation}:     "amf-handover",
-	{MessageTypeInitiating, ProcedureCodePathSwitchRequest}:       "amf-path-switch",
-	{MessageTypeInitiating, ProcedureCodeUEContextRelease}:        "amf-context-release",
-	{MessageTypeInitiating, ProcedureCodeDownlinkNASTransport}:   "amf-downlink-nas",
-}
-
-// ParseNGAPMessage decodes an NGAP PDU and extracts both routing information and
-// IE values per TS 38.413 Section 9.2. The simplified wire format used here:
-//
-//	Byte 0: NGAP-PDU choice byte (same as RouteNGAP)
-//	Byte 1: procedureCode
-//	Byte 2: criticality
-//	Byte 3-4: number of IEs (big-endian)
-//	Then for each IE:
-//	  Byte 0-1: IE ID (big-endian)
-//	  Byte 2: criticality
-//	  Byte 3-4: value length (big-endian)
-//	  Byte 5+: value
-//
-// Extracts: RAN-UE-NGAP-ID, AMF-UE-NGAP-ID, NAS-PDU, UserLocationInfo.
+// ParseNGAPMessage decodes an APER-encoded NGAP PDU and extracts common IEs.
 func ParseNGAPMessage(data []byte) (*NGAPContext, error) {
-	if len(data) < 3 {
-		return nil, fmt.Errorf("ngap pdu too short: %d bytes", len(data))
-	}
-
-	route, err := RouteNGAP(data)
+	pdu, err := ngap.Decoder(data)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("ngap aper decode: %w", err)
 	}
 
-	ctx := &NGAPContext{
-		Route: *route,
-	}
+	ctx := &NGAPContext{PDU: pdu}
 
-	// Parse IE list if enough data is present
-	if len(data) < 5 {
-		return ctx, nil
-	}
-
-	numIEs := int(data[3])<<8 | int(data[4])
-	offset := 5
-
-	for i := 0; i < numIEs && offset+5 <= len(data); i++ {
-		ieID := int(data[offset])<<8 | int(data[offset+1])
-		// skip criticality byte
-		vLen := int(data[offset+3])<<8 | int(data[offset+4])
-		offset += 5
-
-		if offset+vLen > len(data) {
-			break
+	switch pdu.Present {
+	case ngapType.NGAPPDUPresentInitiatingMessage:
+		if pdu.InitiatingMessage == nil {
+			return nil, fmt.Errorf("initiating message is nil")
 		}
-		ieValue := data[offset : offset+vLen]
-		offset += vLen
-
-		switch ieID {
-		case IEID_RAN_UE_NGAP_ID:
-			if len(ieValue) >= 4 {
-				ctx.RANUeNgapID = int64(ieValue[0])<<24 | int64(ieValue[1])<<16 |
-					int64(ieValue[2])<<8 | int64(ieValue[3])
-			}
-		case IEID_AMF_UE_NGAP_ID:
-			if len(ieValue) >= 4 {
-				ctx.AMFUeNgapID = int64(ieValue[0])<<24 | int64(ieValue[1])<<16 |
-					int64(ieValue[2])<<8 | int64(ieValue[3])
-			}
-		case IEID_NAS_PDU:
-			ctx.NASPDU = make([]byte, len(ieValue))
-			copy(ctx.NASPDU, ieValue)
-		case IEID_UserLocationInfo:
-			ctx.UserLocationInfo = make([]byte, len(ieValue))
-			copy(ctx.UserLocationInfo, ieValue)
+		ctx.ProcedureCode = pdu.InitiatingMessage.ProcedureCode.Value
+		ctx.MessageType = 0
+		extractInitiatingIEs(pdu.InitiatingMessage, ctx)
+	case ngapType.NGAPPDUPresentSuccessfulOutcome:
+		if pdu.SuccessfulOutcome == nil {
+			return nil, fmt.Errorf("successful outcome is nil")
 		}
+		ctx.ProcedureCode = pdu.SuccessfulOutcome.ProcedureCode.Value
+		ctx.MessageType = 1
+	case ngapType.NGAPPDUPresentUnsuccessfulOutcome:
+		if pdu.UnsuccessfulOutcome == nil {
+			return nil, fmt.Errorf("unsuccessful outcome is nil")
+		}
+		ctx.ProcedureCode = pdu.UnsuccessfulOutcome.ProcedureCode.Value
+		ctx.MessageType = 2
+	default:
+		return nil, fmt.Errorf("unknown NGAP PDU present: %d", pdu.Present)
 	}
 
 	return ctx, nil
 }
 
-// BuildDownlinkNASTransport constructs a simplified DownlinkNASTransport NGAP PDU
-// containing AMF-UE-NGAP-ID, RAN-UE-NGAP-ID, and NAS-PDU IEs.
-// Used by the AMF to send NAS messages to the UE via the gNB (TS 38.413 Section 9.2.3.1).
-func BuildDownlinkNASTransport(amfUeNgapID, ranUeNgapID int64, nasPDU []byte) []byte {
-	// Header: initiatingMessage, DownlinkNASTransport, criticality
-	msg := []byte{
-		0x00,                                    // initiatingMessage
-		byte(ProcedureCodeDownlinkNASTransport), // procedureCode 4
-		0x00,                                    // criticality: reject
+func extractInitiatingIEs(msg *ngapType.InitiatingMessage, ctx *NGAPContext) {
+	switch msg.Value.Present {
+	case ngapType.InitiatingMessagePresentInitialUEMessage:
+		if m := msg.Value.InitialUEMessage; m != nil {
+			for _, ie := range m.ProtocolIEs.List {
+				switch ie.Value.Present {
+				case ngapType.InitialUEMessageIEsPresentRANUENGAPID:
+					if ie.Value.RANUENGAPID != nil {
+						ctx.RANUeNgapID = ie.Value.RANUENGAPID.Value
+					}
+				case ngapType.InitialUEMessageIEsPresentNASPDU:
+					if ie.Value.NASPDU != nil {
+						ctx.NASPDU = ie.Value.NASPDU.Value
+					}
+				}
+			}
+		}
+	case ngapType.InitiatingMessagePresentUplinkNASTransport:
+		if m := msg.Value.UplinkNASTransport; m != nil {
+			for _, ie := range m.ProtocolIEs.List {
+				switch ie.Value.Present {
+				case ngapType.UplinkNASTransportIEsPresentAMFUENGAPID:
+					if ie.Value.AMFUENGAPID != nil {
+						ctx.AMFUeNgapID = ie.Value.AMFUENGAPID.Value
+					}
+				case ngapType.UplinkNASTransportIEsPresentRANUENGAPID:
+					if ie.Value.RANUENGAPID != nil {
+						ctx.RANUeNgapID = ie.Value.RANUENGAPID.Value
+					}
+				case ngapType.UplinkNASTransportIEsPresentNASPDU:
+					if ie.Value.NASPDU != nil {
+						ctx.NASPDU = ie.Value.NASPDU.Value
+					}
+				}
+			}
+		}
+	case ngapType.InitiatingMessagePresentDownlinkNASTransport:
+		if m := msg.Value.DownlinkNASTransport; m != nil {
+			for _, ie := range m.ProtocolIEs.List {
+				switch ie.Value.Present {
+				case ngapType.DownlinkNASTransportIEsPresentAMFUENGAPID:
+					if ie.Value.AMFUENGAPID != nil {
+						ctx.AMFUeNgapID = ie.Value.AMFUENGAPID.Value
+					}
+				case ngapType.DownlinkNASTransportIEsPresentRANUENGAPID:
+					if ie.Value.RANUENGAPID != nil {
+						ctx.RANUeNgapID = ie.Value.RANUENGAPID.Value
+					}
+				case ngapType.DownlinkNASTransportIEsPresentNASPDU:
+					if ie.Value.NASPDU != nil {
+						ctx.NASPDU = ie.Value.NASPDU.Value
+					}
+				}
+			}
+		}
+	case ngapType.InitiatingMessagePresentNGSetupRequest:
+		// NG Setup has no RAN/AMF UE NGAP IDs or NAS PDU
 	}
-
-	// Number of IEs = 3
-	msg = append(msg, 0x00, 0x03)
-
-	// IE: AMF-UE-NGAP-ID
-	msg = append(msg, byte(IEID_AMF_UE_NGAP_ID>>8), byte(IEID_AMF_UE_NGAP_ID&0xFF))
-	msg = append(msg, 0x00) // criticality
-	msg = append(msg, 0x00, 0x04) // length = 4
-	msg = append(msg, byte(amfUeNgapID>>24), byte(amfUeNgapID>>16), byte(amfUeNgapID>>8), byte(amfUeNgapID))
-
-	// IE: RAN-UE-NGAP-ID
-	msg = append(msg, byte(IEID_RAN_UE_NGAP_ID>>8), byte(IEID_RAN_UE_NGAP_ID&0xFF))
-	msg = append(msg, 0x00) // criticality
-	msg = append(msg, 0x00, 0x04) // length = 4
-	msg = append(msg, byte(ranUeNgapID>>24), byte(ranUeNgapID>>16), byte(ranUeNgapID>>8), byte(ranUeNgapID))
-
-	// IE: NAS-PDU
-	msg = append(msg, byte(IEID_NAS_PDU>>8), byte(IEID_NAS_PDU&0xFF))
-	msg = append(msg, 0x00) // criticality
-	nasLen := len(nasPDU)
-	msg = append(msg, byte(nasLen>>8), byte(nasLen&0xFF))
-	msg = append(msg, nasPDU...)
-
-	return msg
 }
 
-// RouteNGAP decodes the APER-encoded NGAP-PDU header and returns routing info.
-// Only the first two bytes are needed: message type and procedure code.
-//
-// NGAP-PDU wire format (APER):
-//
-//	Byte 0: [ext(1) | choice_index(2) | padding(5)]
-//	  choice: 0=initiatingMessage, 1=successfulOutcome, 2=unsuccessfulOutcome
-//	Byte 1: procedureCode (INTEGER 0..255)
-func RouteNGAP(data []byte) (*MessageRoute, error) {
-	if len(data) < 3 {
-		return nil, fmt.Errorf("ngap pdu too short: %d bytes", len(data))
+// BuildNGSetupResponse builds an APER-encoded NGSetupResponse for the eval config.
+// PLMN 001/01, S-NSSAI SST=1 SD=010203.
+func BuildNGSetupResponse(plmnBytes []byte, sst byte, sd []byte) ([]byte, error) {
+	sdVal := ngapType.SD{Value: sd}
+	pdu := ngapType.NGAPPDU{
+		Present: ngapType.NGAPPDUPresentSuccessfulOutcome,
+		SuccessfulOutcome: &ngapType.SuccessfulOutcome{
+			ProcedureCode: ngapType.ProcedureCode{Value: ngapType.ProcedureCodeNGSetup},
+			Criticality:   ngapType.Criticality{Value: ngapType.CriticalityPresentReject},
+			Value: ngapType.SuccessfulOutcomeValue{
+				Present: ngapType.SuccessfulOutcomePresentNGSetupResponse,
+				NGSetupResponse: &ngapType.NGSetupResponse{
+					ProtocolIEs: ngapType.ProtocolIEContainerNGSetupResponseIEs{
+						List: []ngapType.NGSetupResponseIEs{
+							{
+								Id:          ngapType.ProtocolIEID{Value: ngapType.ProtocolIEIDAMFName},
+								Criticality: ngapType.Criticality{Value: ngapType.CriticalityPresentReject},
+								Value: ngapType.NGSetupResponseIEsValue{
+									Present: ngapType.NGSetupResponseIEsPresentAMFName,
+									AMFName: &ngapType.AMFName{Value: "serverless5gc-amf"},
+								},
+							},
+							{
+								Id:          ngapType.ProtocolIEID{Value: ngapType.ProtocolIEIDServedGUAMIList},
+								Criticality: ngapType.Criticality{Value: ngapType.CriticalityPresentReject},
+								Value: ngapType.NGSetupResponseIEsValue{
+									Present:         ngapType.NGSetupResponseIEsPresentServedGUAMIList,
+									ServedGUAMIList: buildServedGUAMIList(plmnBytes),
+								},
+							},
+							{
+								Id:          ngapType.ProtocolIEID{Value: ngapType.ProtocolIEIDRelativeAMFCapacity},
+								Criticality: ngapType.Criticality{Value: ngapType.CriticalityPresentIgnore},
+								Value: ngapType.NGSetupResponseIEsValue{
+									Present:             ngapType.NGSetupResponseIEsPresentRelativeAMFCapacity,
+									RelativeAMFCapacity: &ngapType.RelativeAMFCapacity{Value: 255},
+								},
+							},
+							{
+								Id:          ngapType.ProtocolIEID{Value: ngapType.ProtocolIEIDPLMNSupportList},
+								Criticality: ngapType.Criticality{Value: ngapType.CriticalityPresentReject},
+								Value: ngapType.NGSetupResponseIEsValue{
+									Present: ngapType.NGSetupResponseIEsPresentPLMNSupportList,
+									PLMNSupportList: &ngapType.PLMNSupportList{
+										List: []ngapType.PLMNSupportItem{
+											{
+												PLMNIdentity: ngapType.PLMNIdentity{Value: plmnBytes},
+												SliceSupportList: ngapType.SliceSupportList{
+													List: []ngapType.SliceSupportItem{
+														{
+															SNSSAI: ngapType.SNSSAI{
+																SST: ngapType.SST{Value: []byte{sst}},
+																SD:  &sdVal,
+															},
+														},
+													},
+												},
+											},
+										},
+									},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
 	}
+	return ngap.Encoder(pdu)
+}
 
-	msgType := int((data[0] >> 5) & 0x03)
-	procedureCode := int(data[1])
-
-	key := [2]int{msgType, procedureCode}
-	funcName, ok := routingTable[key]
-	if !ok {
-		return nil, fmt.Errorf("no route for message type %d, procedure code %d", msgType, procedureCode)
+func buildServedGUAMIList(plmnBytes []byte) *ngapType.ServedGUAMIList {
+	return &ngapType.ServedGUAMIList{
+		List: []ngapType.ServedGUAMIItem{
+			{
+				GUAMI: ngapType.GUAMI{
+					PLMNIdentity: ngapType.PLMNIdentity{Value: plmnBytes},
+					AMFRegionID:  ngapType.AMFRegionID{Value: aper.BitString{Bytes: []byte{0x01}, BitLength: 8}},
+					AMFSetID:     ngapType.AMFSetID{Value: aper.BitString{Bytes: []byte{0x00, 0x40}, BitLength: 10}},
+					AMFPointer:   ngapType.AMFPointer{Value: aper.BitString{Bytes: []byte{0x00}, BitLength: 6}},
+				},
+			},
+		},
 	}
+}
 
-	return &MessageRoute{
-		FunctionName:  funcName,
-		ProcedureCode: procedureCode,
-		MessageType:   msgType,
-	}, nil
+// BuildDownlinkNASTransport builds an APER-encoded DownlinkNASTransport NGAP PDU.
+func BuildDownlinkNASTransport(amfUeNgapID, ranUeNgapID int64, nasPDU []byte) ([]byte, error) {
+	pdu := ngapType.NGAPPDU{
+		Present: ngapType.NGAPPDUPresentInitiatingMessage,
+		InitiatingMessage: &ngapType.InitiatingMessage{
+			ProcedureCode: ngapType.ProcedureCode{Value: ngapType.ProcedureCodeDownlinkNASTransport},
+			Criticality:   ngapType.Criticality{Value: ngapType.CriticalityPresentIgnore},
+			Value: ngapType.InitiatingMessageValue{
+				Present: ngapType.InitiatingMessagePresentDownlinkNASTransport,
+				DownlinkNASTransport: &ngapType.DownlinkNASTransport{
+					ProtocolIEs: ngapType.ProtocolIEContainerDownlinkNASTransportIEs{
+						List: []ngapType.DownlinkNASTransportIEs{
+							{
+								Id:          ngapType.ProtocolIEID{Value: ngapType.ProtocolIEIDAMFUENGAPID},
+								Criticality: ngapType.Criticality{Value: ngapType.CriticalityPresentReject},
+								Value: ngapType.DownlinkNASTransportIEsValue{
+									Present:     ngapType.DownlinkNASTransportIEsPresentAMFUENGAPID,
+									AMFUENGAPID: &ngapType.AMFUENGAPID{Value: amfUeNgapID},
+								},
+							},
+							{
+								Id:          ngapType.ProtocolIEID{Value: ngapType.ProtocolIEIDRANUENGAPID},
+								Criticality: ngapType.Criticality{Value: ngapType.CriticalityPresentReject},
+								Value: ngapType.DownlinkNASTransportIEsValue{
+									Present:     ngapType.DownlinkNASTransportIEsPresentRANUENGAPID,
+									RANUENGAPID: &ngapType.RANUENGAPID{Value: ranUeNgapID},
+								},
+							},
+							{
+								Id:          ngapType.ProtocolIEID{Value: ngapType.ProtocolIEIDNASPDU},
+								Criticality: ngapType.Criticality{Value: ngapType.CriticalityPresentReject},
+								Value: ngapType.DownlinkNASTransportIEsValue{
+									Present: ngapType.DownlinkNASTransportIEsPresentNASPDU,
+									NASPDU:  &ngapType.NASPDU{Value: nasPDU},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	return ngap.Encoder(pdu)
+}
+
+// BuildInitialContextSetupRequest builds an APER-encoded InitialContextSetupRequest
+// containing the NAS Registration Accept.
+func BuildInitialContextSetupRequest(amfUeNgapID, ranUeNgapID int64, nasPDU, plmnBytes []byte, sst byte, sd []byte) ([]byte, error) {
+	sdVal := ngapType.SD{Value: sd}
+	// Security key: 256 bits of zeros (dummy for eval)
+	secKey := make([]byte, 32)
+
+	pdu := ngapType.NGAPPDU{
+		Present: ngapType.NGAPPDUPresentInitiatingMessage,
+		InitiatingMessage: &ngapType.InitiatingMessage{
+			ProcedureCode: ngapType.ProcedureCode{Value: ngapType.ProcedureCodeInitialContextSetup},
+			Criticality:   ngapType.Criticality{Value: ngapType.CriticalityPresentReject},
+			Value: ngapType.InitiatingMessageValue{
+				Present: ngapType.InitiatingMessagePresentInitialContextSetupRequest,
+				InitialContextSetupRequest: &ngapType.InitialContextSetupRequest{
+					ProtocolIEs: ngapType.ProtocolIEContainerInitialContextSetupRequestIEs{
+						List: []ngapType.InitialContextSetupRequestIEs{
+							{
+								Id:          ngapType.ProtocolIEID{Value: ngapType.ProtocolIEIDAMFUENGAPID},
+								Criticality: ngapType.Criticality{Value: ngapType.CriticalityPresentReject},
+								Value: ngapType.InitialContextSetupRequestIEsValue{
+									Present:     ngapType.InitialContextSetupRequestIEsPresentAMFUENGAPID,
+									AMFUENGAPID: &ngapType.AMFUENGAPID{Value: amfUeNgapID},
+								},
+							},
+							{
+								Id:          ngapType.ProtocolIEID{Value: ngapType.ProtocolIEIDRANUENGAPID},
+								Criticality: ngapType.Criticality{Value: ngapType.CriticalityPresentReject},
+								Value: ngapType.InitialContextSetupRequestIEsValue{
+									Present:     ngapType.InitialContextSetupRequestIEsPresentRANUENGAPID,
+									RANUENGAPID: &ngapType.RANUENGAPID{Value: ranUeNgapID},
+								},
+							},
+							{
+								Id:          ngapType.ProtocolIEID{Value: ngapType.ProtocolIEIDGUAMI},
+								Criticality: ngapType.Criticality{Value: ngapType.CriticalityPresentReject},
+								Value: ngapType.InitialContextSetupRequestIEsValue{
+									Present: ngapType.InitialContextSetupRequestIEsPresentGUAMI,
+									GUAMI: &ngapType.GUAMI{
+										PLMNIdentity: ngapType.PLMNIdentity{Value: plmnBytes},
+										AMFRegionID:  ngapType.AMFRegionID{Value: aper.BitString{Bytes: []byte{0x01}, BitLength: 8}},
+										AMFSetID:     ngapType.AMFSetID{Value: aper.BitString{Bytes: []byte{0x00, 0x40}, BitLength: 10}},
+										AMFPointer:   ngapType.AMFPointer{Value: aper.BitString{Bytes: []byte{0x00}, BitLength: 6}},
+									},
+								},
+							},
+							{
+								Id:          ngapType.ProtocolIEID{Value: ngapType.ProtocolIEIDAllowedNSSAI},
+								Criticality: ngapType.Criticality{Value: ngapType.CriticalityPresentReject},
+								Value: ngapType.InitialContextSetupRequestIEsValue{
+									Present: ngapType.InitialContextSetupRequestIEsPresentAllowedNSSAI,
+									AllowedNSSAI: &ngapType.AllowedNSSAI{
+										List: []ngapType.AllowedNSSAIItem{
+											{
+												SNSSAI: ngapType.SNSSAI{
+													SST: ngapType.SST{Value: []byte{sst}},
+													SD:  &sdVal,
+												},
+											},
+										},
+									},
+								},
+							},
+							{
+								Id:          ngapType.ProtocolIEID{Value: ngapType.ProtocolIEIDUESecurityCapabilities},
+								Criticality: ngapType.Criticality{Value: ngapType.CriticalityPresentReject},
+								Value: ngapType.InitialContextSetupRequestIEsValue{
+									Present: ngapType.InitialContextSetupRequestIEsPresentUESecurityCapabilities,
+									UESecurityCapabilities: &ngapType.UESecurityCapabilities{
+										NRencryptionAlgorithms:             ngapType.NRencryptionAlgorithms{Value: aper.BitString{Bytes: []byte{0xC0, 0x00}, BitLength: 16}},
+										NRintegrityProtectionAlgorithms:    ngapType.NRintegrityProtectionAlgorithms{Value: aper.BitString{Bytes: []byte{0xC0, 0x00}, BitLength: 16}},
+										EUTRAencryptionAlgorithms:          ngapType.EUTRAencryptionAlgorithms{Value: aper.BitString{Bytes: []byte{0xC0, 0x00}, BitLength: 16}},
+										EUTRAintegrityProtectionAlgorithms: ngapType.EUTRAintegrityProtectionAlgorithms{Value: aper.BitString{Bytes: []byte{0xC0, 0x00}, BitLength: 16}},
+									},
+								},
+							},
+							{
+								Id:          ngapType.ProtocolIEID{Value: ngapType.ProtocolIEIDSecurityKey},
+								Criticality: ngapType.Criticality{Value: ngapType.CriticalityPresentReject},
+								Value: ngapType.InitialContextSetupRequestIEsValue{
+									Present:     ngapType.InitialContextSetupRequestIEsPresentSecurityKey,
+									SecurityKey: &ngapType.SecurityKey{Value: aper.BitString{Bytes: secKey, BitLength: 256}},
+								},
+							},
+							{
+								Id:          ngapType.ProtocolIEID{Value: ngapType.ProtocolIEIDNASPDU},
+								Criticality: ngapType.Criticality{Value: ngapType.CriticalityPresentIgnore},
+								Value: ngapType.InitialContextSetupRequestIEsValue{
+									Present: ngapType.InitialContextSetupRequestIEsPresentNASPDU,
+									NASPDU:  &ngapType.NASPDU{Value: nasPDU},
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	return ngap.Encoder(pdu)
+}
+
+// PLMNBytes encodes MCC/MNC into 3-byte PLMN identity (3GPP TS 24.501).
+// Example: PLMNBytes("001", "01") → [0x00, 0xF1, 0x10].
+func PLMNBytes(mcc, mnc string) []byte {
+	if len(mcc) != 3 {
+		return []byte{0, 0, 0}
+	}
+	b0 := (mcc[1]-'0')<<4 | (mcc[0] - '0')
+	var b1 byte
+	if len(mnc) == 2 {
+		b1 = 0xF0 | (mcc[2] - '0')
+	} else {
+		b1 = (mnc[0]-'0')<<4 | (mcc[2] - '0')
+	}
+	var b2 byte
+	if len(mnc) == 2 {
+		b2 = (mnc[1]-'0')<<4 | (mnc[0] - '0')
+	} else {
+		b2 = (mnc[2]-'0')<<4 | (mnc[1] - '0')
+	}
+	return []byte{b0, b1, b2}
 }

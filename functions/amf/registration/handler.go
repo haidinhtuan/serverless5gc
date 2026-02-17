@@ -71,6 +71,7 @@ type RegistrationRequest struct {
 	RegistrationType uint8           `json:"registration_type,omitempty"` // TS 24.501 Table 9.11.3.7.1
 	RequestedNSSAI   []models.SNSSAI `json:"requested_nssai,omitempty"`
 	UESecurityCap    *ueSecCap       `json:"ue_security_cap,omitempty"`
+	SkipAuth         bool            `json:"skip_auth"`
 }
 
 type ueSecCap struct {
@@ -136,69 +137,72 @@ func Handle(req handler.Request) (handler.Response, error) {
 	// Allocate AMF-UE-NGAP-ID (TS 38.413 Section 9.3.3.1)
 	amfUeNgapID := atomic.AddInt64(&amfUeNgapIDCounter, 1)
 
-	// Step 1a: Nausf_UEAuthentication_Initiate -- Get auth challenge (TS 29.509 Section 6.1.3)
-	// This calls UDM to generate 5G-AKA auth vectors and returns RAND/AUTN challenge.
-	var authChallenge struct {
-		AuthType string `json:"auth_type"`
-		RAND     string `json:"rand"`
-		AUTN     string `json:"autn"`
-		SUPI     string `json:"supi"`
-	}
-	if err := sbiClient.CallFunction("amf-auth-initiate",
-		map[string]string{"supi": regReq.SUPI},
-		&authChallenge); err != nil {
-		return problemResp(http.StatusInternalServerError,
-			"UPSTREAM_NF_FAILURE",
-			fmt.Sprintf("Nausf_UEAuthentication_Initiate: %s", err)), nil
-	}
-
-	// Step 1b: Simulate UE computing RES* from RAND challenge (TS 33.501 Section 6.1.3)
-	// In production, RAND/AUTN are sent to the UE which computes RES* using its USIM.
-	// Here we read the stored auth vector to obtain the expected RES* (== XRES*),
-	// simulating a correct UE response for the function-per-procedure evaluation.
-	var storedAV crypto.AuthVector
-	if err := store.Get(ctx, "auth-vectors/"+regReq.SUPI, &storedAV); err != nil {
-		return problemResp(http.StatusInternalServerError,
-			"AUTH_VECTOR_FAILURE",
-			fmt.Sprintf("read auth vector: %s", err)), nil
-	}
-
-	// Step 1c: Nausf_UEAuthentication_Authenticate -- Verify RES* via AUSF (TS 29.509)
-	var authResult authResponse
-	if err := sbiClient.CallFunction("ausf-authenticate",
-		map[string]string{"supi": regReq.SUPI, "res_star": hex.EncodeToString(storedAV.XRES)},
-		&authResult); err != nil {
-		return problemResp(http.StatusInternalServerError,
-			"UPSTREAM_NF_FAILURE",
-			fmt.Sprintf("Nausf_UEAuthentication: %s", err)), nil
-	}
-	if authResult.AuthResult != "SUCCESS" {
-		rejectNAS := nas.EncodeRegistrationReject(&nas.RegistrationReject{
-			CauseCode: nas.CauseIllegalUE,
-		})
-		return problemRespWithNAS(http.StatusForbidden,
-			"ILLEGAL_UE",
-			fmt.Sprintf("authentication failed for %s: %s", regReq.SUPI, nas.CauseString(nas.CauseIllegalUE)),
-			hex.EncodeToString(rejectNAS)), nil
-	}
-
-	// Step 2: NAS Security Mode Command (TS 24.501 Section 8.2.25)
+	// Security defaults (used regardless of auth path)
 	selectedCiphering := uint8(nas.CipherAlg5GEA2)
 	selectedIntegrity := uint8(nas.IntegAlg5GIA2)
 	ngKSI := uint8(0)
-
-	smcNAS := nas.EncodeSecurityModeCommand(&nas.SecurityModeCommand{
-		SelectedCiphering: selectedCiphering,
-		SelectedIntegrity: selectedIntegrity,
-		NgKSI:             ngKSI,
-		ReplayedUESecCap:  &nas.UESecurityCapability{EA0: true, EA1: true, EA2: true, IA0: true, IA1: true, IA2: true},
-	})
-	_ = smcNAS // In production: sent via NGAP DownlinkNASTransport, await SecurityModeComplete
-
-	// Derive KAMF from KAUSF (TS 33.501 Section 6.1.4.4)
 	var kamfKey []byte
-	if authResult.KAUSF != "" {
-		kamfKey, _ = hex.DecodeString(authResult.KAUSF)
+
+	if !regReq.SkipAuth {
+		// Step 1a: Nausf_UEAuthentication_Initiate -- Get auth challenge (TS 29.509 Section 6.1.3)
+		// This calls UDM to generate 5G-AKA auth vectors and returns RAND/AUTN challenge.
+		var authChallenge struct {
+			AuthType string `json:"auth_type"`
+			RAND     string `json:"rand"`
+			AUTN     string `json:"autn"`
+			SUPI     string `json:"supi"`
+		}
+		if err := sbiClient.CallFunction("amf-auth-initiate",
+			map[string]string{"supi": regReq.SUPI},
+			&authChallenge); err != nil {
+			return problemResp(http.StatusInternalServerError,
+				"UPSTREAM_NF_FAILURE",
+				fmt.Sprintf("Nausf_UEAuthentication_Initiate: %s", err)), nil
+		}
+
+		// Step 1b: Simulate UE computing RES* from RAND challenge (TS 33.501 Section 6.1.3)
+		// In production, RAND/AUTN are sent to the UE which computes RES* using its USIM.
+		// Here we read the stored auth vector to obtain the expected RES* (== XRES*),
+		// simulating a correct UE response for the function-per-procedure evaluation.
+		var storedAV crypto.AuthVector
+		if err := store.Get(ctx, "auth-vectors/"+regReq.SUPI, &storedAV); err != nil {
+			return problemResp(http.StatusInternalServerError,
+				"AUTH_VECTOR_FAILURE",
+				fmt.Sprintf("read auth vector: %s", err)), nil
+		}
+
+		// Step 1c: Nausf_UEAuthentication_Authenticate -- Verify RES* via AUSF (TS 29.509)
+		var authResult authResponse
+		if err := sbiClient.CallFunction("ausf-authenticate",
+			map[string]string{"supi": regReq.SUPI, "res_star": hex.EncodeToString(storedAV.XRES)},
+			&authResult); err != nil {
+			return problemResp(http.StatusInternalServerError,
+				"UPSTREAM_NF_FAILURE",
+				fmt.Sprintf("Nausf_UEAuthentication: %s", err)), nil
+		}
+		if authResult.AuthResult != "SUCCESS" {
+			rejectNAS := nas.EncodeRegistrationReject(&nas.RegistrationReject{
+				CauseCode: nas.CauseIllegalUE,
+			})
+			return problemRespWithNAS(http.StatusForbidden,
+				"ILLEGAL_UE",
+				fmt.Sprintf("authentication failed for %s: %s", regReq.SUPI, nas.CauseString(nas.CauseIllegalUE)),
+				hex.EncodeToString(rejectNAS)), nil
+		}
+
+		// Step 2: NAS Security Mode Command (TS 24.501 Section 8.2.25)
+		smcNAS := nas.EncodeSecurityModeCommand(&nas.SecurityModeCommand{
+			SelectedCiphering: selectedCiphering,
+			SelectedIntegrity: selectedIntegrity,
+			NgKSI:             ngKSI,
+			ReplayedUESecCap:  &nas.UESecurityCapability{EA0: true, EA1: true, EA2: true, IA0: true, IA1: true, IA2: true},
+		})
+		_ = smcNAS // In production: sent via NGAP DownlinkNASTransport, await SecurityModeComplete
+
+		// Derive KAMF from KAUSF (TS 33.501 Section 6.1.4.4)
+		if authResult.KAUSF != "" {
+			kamfKey, _ = hex.DecodeString(authResult.KAUSF)
+		}
 	}
 
 	// Step 3: Nudm_SDM_Get -- Get subscriber data from UDM (TS 29.503)

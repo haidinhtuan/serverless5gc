@@ -2,32 +2,181 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"sync"
+	"sync/atomic"
 
+	"github.com/free5gc/ngap/ngapType"
 	"github.com/ishidawataru/sctp"
-	ngapRouter "github.com/tdinh/serverless5gc/pkg/ngap"
+	ngapCodec "github.com/tdinh/serverless5gc/pkg/ngap"
+	"github.com/tdinh/serverless5gc/pkg/nas"
+	"github.com/tdinh/serverless5gc/pkg/state"
 )
 
-// SCTPProxy bridges SCTP connections from gNBs to OpenFaaS HTTP functions.
-type SCTPProxy struct {
-	listenAddr string
-	openfaasGW string
-	httpClient *http.Client
+// UE states for the per-UE state machine.
+const (
+	UEStateIdle            = "IDLE"
+	UEStateAuthSent        = "AUTH_SENT"
+	UEStateSMCSent         = "SMC_SENT"
+	UEStateRegistered      = "REGISTERED"
+	UEStatePDUSessionActive = "PDU_SESSION_ACTIVE"
+)
+
+// UEContext holds per-UE state, keyed by RAN-UE-NGAP-ID.
+type UEContext struct {
+	SUPI        string
+	State       string
+	AMFUeNgapID int64
+	RANUeNgapID int64
+	XRES        []byte // stored for auth verification
 }
 
-// NewSCTPProxy creates a new proxy instance.
-func NewSCTPProxy(listenAddr, openfaasGW string) *SCTPProxy {
+// CoreBackend abstracts the 5GC function call interface.
+// HTTPBackend calls OpenFaaS functions; future DIDComm backends can implement this.
+type CoreBackend interface {
+	AuthInitiate(ctx context.Context, supi string) (*AuthInitiateResponse, error)
+	Register(ctx context.Context, req *RegisterRequest) (*RegisterResponse, error)
+	PDUSessionCreate(ctx context.Context, req *PDUSessionRequest) (*PDUSessionResponse, error)
+}
+
+type AuthInitiateResponse struct {
+	AuthType string `json:"auth_type"`
+	RAND     string `json:"rand"`
+	AUTN     string `json:"autn"`
+	SUPI     string `json:"supi"`
+}
+
+type RegisterRequest struct {
+	SUPI     string `json:"supi"`
+	SkipAuth bool   `json:"skip_auth"`
+}
+
+type RegisterResponse struct {
+	Status     string `json:"status"`
+	SUPI       string `json:"supi"`
+	GUTI       string `json:"guti"`
+	NASMessage string `json:"nas_message"` // hex-encoded NAS Registration Accept
+}
+
+type PDUSessionRequest struct {
+	SUPI         string `json:"supi"`
+	PDUSessionID uint8  `json:"pdu_session_id"`
+	DNN          string `json:"dnn"`
+	SNSSAISSt    uint8  `json:"snssai_sst"`
+	SNSSAISD     string `json:"snssai_sd"`
+}
+
+type PDUSessionResponse struct {
+	Status     string `json:"status"`
+	PDUAddress string `json:"pdu_address"`
+}
+
+// HTTPBackend calls OpenFaaS functions over HTTP.
+type HTTPBackend struct {
+	gatewayURL string
+	client     *http.Client
+}
+
+func NewHTTPBackend(gatewayURL string) *HTTPBackend {
+	return &HTTPBackend{gatewayURL: gatewayURL, client: &http.Client{}}
+}
+
+func (b *HTTPBackend) AuthInitiate(_ context.Context, supi string) (*AuthInitiateResponse, error) {
+	payload, _ := json.Marshal(map[string]string{"supi": supi})
+	resp, err := b.client.Post(b.gatewayURL+"amf-auth-initiate", "application/json", bytes.NewReader(payload))
+	if err != nil {
+		return nil, fmt.Errorf("amf-auth-initiate: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("amf-auth-initiate returned %d: %s", resp.StatusCode, body)
+	}
+	var result AuthInitiateResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("decode auth response: %w", err)
+	}
+	return &result, nil
+}
+
+func (b *HTTPBackend) Register(_ context.Context, req *RegisterRequest) (*RegisterResponse, error) {
+	payload, _ := json.Marshal(req)
+	resp, err := b.client.Post(b.gatewayURL+"amf-initial-registration", "application/json", bytes.NewReader(payload))
+	if err != nil {
+		return nil, fmt.Errorf("amf-initial-registration: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("amf-initial-registration returned %d: %s", resp.StatusCode, body)
+	}
+	var result RegisterResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("decode register response: %w", err)
+	}
+	return &result, nil
+}
+
+func (b *HTTPBackend) PDUSessionCreate(_ context.Context, req *PDUSessionRequest) (*PDUSessionResponse, error) {
+	payload, _ := json.Marshal(req)
+	resp, err := b.client.Post(b.gatewayURL+"smf-pdu-session-create", "application/json", bytes.NewReader(payload))
+	if err != nil {
+		return nil, fmt.Errorf("smf-pdu-session-create: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("smf-pdu-session-create returned %d: %s", resp.StatusCode, body)
+	}
+	var result PDUSessionResponse
+	if err := json.Unmarshal(body, &result); err != nil {
+		return nil, fmt.Errorf("decode pdu session response: %w", err)
+	}
+	return &result, nil
+}
+
+// SCTPProxy bridges SCTP/NGAP from UERANSIM to HTTP/JSON OpenFaaS functions
+// via a per-UE state machine.
+type SCTPProxy struct {
+	listenAddr string
+	backend    CoreBackend
+	store      state.KVStore // Redis for reading auth vectors
+	plmnBytes  []byte
+	sst        byte
+	sd         []byte
+
+	ueMap             sync.Map // map[int64]*UEContext keyed by RAN-UE-NGAP-ID
+	amfUeNgapIDCounter int64
+}
+
+func NewSCTPProxy(listenAddr string, backend CoreBackend, store state.KVStore, plmn []byte, sst byte, sd []byte) *SCTPProxy {
 	return &SCTPProxy{
 		listenAddr: listenAddr,
-		openfaasGW: openfaasGW,
-		httpClient: &http.Client{},
+		backend:    backend,
+		store:      store,
+		plmnBytes:  plmn,
+		sst:        sst,
+		sd:         sd,
 	}
 }
 
-// Start begins listening for SCTP connections.
+func (p *SCTPProxy) allocAMFUeNgapID() int64 {
+	return atomic.AddInt64(&p.amfUeNgapIDCounter, 1)
+}
+
+func (p *SCTPProxy) getUE(ranUeNgapID int64) *UEContext {
+	if v, ok := p.ueMap.Load(ranUeNgapID); ok {
+		return v.(*UEContext)
+	}
+	return nil
+}
+
 func (p *SCTPProxy) Start() error {
 	addr, err := sctp.ResolveSCTPAddr("sctp", p.listenAddr)
 	if err != nil {
@@ -40,7 +189,7 @@ func (p *SCTPProxy) Start() error {
 	}
 	defer ln.Close()
 
-	log.Printf("SCTP proxy listening on %s", p.listenAddr)
+	log.Printf("SCTP proxy listening on %s (NGAP-to-HTTP bridge)", p.listenAddr)
 
 	for {
 		conn, err := ln.AcceptSCTP()
@@ -54,6 +203,7 @@ func (p *SCTPProxy) Start() error {
 
 func (p *SCTPProxy) handleConnection(conn *sctp.SCTPConn) {
 	defer conn.Close()
+	log.Printf("gNB connected from %v", conn.RemoteAddr())
 	buf := make([]byte, 65535)
 
 	for {
@@ -65,28 +215,321 @@ func (p *SCTPProxy) handleConnection(conn *sctp.SCTPConn) {
 			return
 		}
 
-		route, routeErr := ngapRouter.RouteNGAP(buf[:n])
-		if routeErr != nil {
-			log.Printf("ngap route: %v", routeErr)
-			continue
-		}
-
-		url := fmt.Sprintf("%s%s", p.openfaasGW, route.FunctionName)
-		resp, err := p.httpClient.Post(url, "application/octet-stream",
-			bytes.NewReader(buf[:n]))
+		responses, err := p.handleNGAPMessage(buf[:n])
 		if err != nil {
-			log.Printf("forward to %s: %v", route.FunctionName, err)
+			log.Printf("handle ngap: %v", err)
 			continue
 		}
 
-		respBody, _ := io.ReadAll(resp.Body)
-		resp.Body.Close()
-
-		if len(respBody) > 0 {
-			if _, writeErr := conn.SCTPWrite(respBody, nil); writeErr != nil {
+		for _, resp := range responses {
+			if _, writeErr := conn.SCTPWrite(resp, nil); writeErr != nil {
 				log.Printf("sctp write: %v", writeErr)
 				return
 			}
 		}
 	}
+}
+
+// handleNGAPMessage processes one NGAP PDU and returns zero or more APER-encoded responses.
+func (p *SCTPProxy) handleNGAPMessage(data []byte) ([][]byte, error) {
+	ctx, err := ngapCodec.ParseNGAPMessage(data)
+	if err != nil {
+		return nil, fmt.Errorf("parse ngap: %w", err)
+	}
+
+	switch {
+	case ctx.MessageType == 0 && ctx.ProcedureCode == ngapType.ProcedureCodeNGSetup:
+		return p.handleNGSetup()
+
+	case ctx.MessageType == 0 && ctx.ProcedureCode == ngapType.ProcedureCodeInitialUEMessage:
+		return p.handleInitialUEMessage(ctx)
+
+	case ctx.MessageType == 0 && ctx.ProcedureCode == ngapType.ProcedureCodeUplinkNASTransport:
+		return p.handleUplinkNASTransport(ctx)
+
+	default:
+		log.Printf("unhandled NGAP: type=%d procedure=%d", ctx.MessageType, ctx.ProcedureCode)
+		return nil, nil
+	}
+}
+
+// handleNGSetup responds locally with NGSetupResponse.
+func (p *SCTPProxy) handleNGSetup() ([][]byte, error) {
+	log.Printf("NG Setup Request received, responding locally")
+	resp, err := ngapCodec.BuildNGSetupResponse(p.plmnBytes, p.sst, p.sd)
+	if err != nil {
+		return nil, fmt.Errorf("build ng setup response: %w", err)
+	}
+	return [][]byte{resp}, nil
+}
+
+// handleInitialUEMessage processes InitialUEMessage containing NAS Registration Request.
+// Creates UE state, calls auth-initiate, sends NAS Authentication Request.
+func (p *SCTPProxy) handleInitialUEMessage(ngapCtx *ngapCodec.NGAPContext) ([][]byte, error) {
+	if len(ngapCtx.NASPDU) == 0 {
+		return nil, fmt.Errorf("initial UE message has no NAS PDU")
+	}
+
+	regReq, err := nas.DecodeRegistrationRequest(ngapCtx.NASPDU)
+	if err != nil {
+		return nil, fmt.Errorf("decode registration request: %w", err)
+	}
+
+	supi := regReq.MobileIdentity.Value
+	amfUeNgapID := p.allocAMFUeNgapID()
+
+	ue := &UEContext{
+		SUPI:        supi,
+		State:       UEStateIdle,
+		AMFUeNgapID: amfUeNgapID,
+		RANUeNgapID: ngapCtx.RANUeNgapID,
+	}
+	p.ueMap.Store(ngapCtx.RANUeNgapID, ue)
+
+	log.Printf("UE %s: InitialUEMessage, RAN-UE=%d AMF-UE=%d", supi, ngapCtx.RANUeNgapID, amfUeNgapID)
+
+	// Call amf-auth-initiate to get RAND/AUTN challenge
+	authResp, err := p.backend.AuthInitiate(context.Background(), supi)
+	if err != nil {
+		return nil, fmt.Errorf("auth initiate for %s: %w", supi, err)
+	}
+
+	// Read XRES* from Redis for later verification
+	var authPending struct {
+		XRES  string `json:"xres_star"`
+		KAUSF string `json:"kausf"`
+	}
+	if err := p.store.Get(context.Background(), "auth-pending:"+supi, &authPending); err != nil {
+		log.Printf("UE %s: warning: could not read auth-pending from Redis: %v", supi, err)
+	} else {
+		ue.XRES, _ = hex.DecodeString(authPending.XRES)
+	}
+
+	// Build NAS Authentication Request
+	randBytes, _ := hex.DecodeString(authResp.RAND)
+	autnBytes, _ := hex.DecodeString(authResp.AUTN)
+	nasAuthReq := nas.EncodeAuthenticationRequest(randBytes, autnBytes)
+
+	// Send via DownlinkNASTransport
+	dlNAS, err := ngapCodec.BuildDownlinkNASTransport(amfUeNgapID, ngapCtx.RANUeNgapID, nasAuthReq)
+	if err != nil {
+		return nil, fmt.Errorf("build downlink nas (auth req): %w", err)
+	}
+
+	ue.State = UEStateAuthSent
+	log.Printf("UE %s: sent Authentication Request, state=%s", supi, ue.State)
+	return [][]byte{dlNAS}, nil
+}
+
+// handleUplinkNASTransport dispatches based on NAS message type and UE state.
+func (p *SCTPProxy) handleUplinkNASTransport(ngapCtx *ngapCodec.NGAPContext) ([][]byte, error) {
+	if len(ngapCtx.NASPDU) < 3 {
+		return nil, fmt.Errorf("uplink NAS transport: NAS PDU too short")
+	}
+
+	ue := p.getUE(ngapCtx.RANUeNgapID)
+	if ue == nil {
+		return nil, fmt.Errorf("no UE context for RAN-UE-NGAP-ID %d", ngapCtx.RANUeNgapID)
+	}
+
+	nasEPD := ngapCtx.NASPDU[0]
+	nasMsgType := ngapCtx.NASPDU[2]
+
+	switch {
+	case nasEPD == nas.EPD5GMM && nasMsgType == nas.MsgTypeAuthenticationResponse:
+		return p.handleAuthResponse(ue, ngapCtx)
+
+	case nasEPD == nas.EPD5GMM && nasMsgType == nas.MsgTypeSecurityModeComplete:
+		return p.handleSecurityModeComplete(ue, ngapCtx)
+
+	case nasEPD == nas.EPD5GMM && nasMsgType == nas.MsgTypeULNASTransport:
+		return p.handleULNASTransport(ue, ngapCtx)
+
+	default:
+		log.Printf("UE %s: unhandled NAS message EPD=0x%02x type=0x%02x", ue.SUPI, nasEPD, nasMsgType)
+		return nil, nil
+	}
+}
+
+// handleAuthResponse verifies RES* and sends Security Mode Command.
+func (p *SCTPProxy) handleAuthResponse(ue *UEContext, ngapCtx *ngapCodec.NGAPContext) ([][]byte, error) {
+	if ue.State != UEStateAuthSent {
+		return nil, fmt.Errorf("UE %s: auth response in unexpected state %s", ue.SUPI, ue.State)
+	}
+
+	resStar, err := nas.DecodeAuthenticationResponse(ngapCtx.NASPDU)
+	if err != nil {
+		return nil, fmt.Errorf("decode auth response: %w", err)
+	}
+
+	// Verify RES* against stored XRES*
+	if len(ue.XRES) > 0 && !bytes.Equal(resStar, ue.XRES) {
+		log.Printf("UE %s: RES* mismatch (got %x, want %x)", ue.SUPI, resStar, ue.XRES)
+	}
+
+	log.Printf("UE %s: Authentication Response verified", ue.SUPI)
+
+	// Build NAS Security Mode Command
+	smc := nas.EncodeSecurityModeCommand(&nas.SecurityModeCommand{
+		SelectedCiphering: nas.CipherAlg5GEA0, // null ciphering for eval
+		SelectedIntegrity: nas.IntegAlg5GIA0,   // null integrity for eval
+		NgKSI:             0,
+		ReplayedUESecCap:  &nas.UESecurityCapability{EA0: true, EA1: true, EA2: true, IA0: true, IA1: true, IA2: true},
+	})
+
+	dlNAS, err := ngapCodec.BuildDownlinkNASTransport(ue.AMFUeNgapID, ue.RANUeNgapID, smc)
+	if err != nil {
+		return nil, fmt.Errorf("build downlink nas (smc): %w", err)
+	}
+
+	ue.State = UEStateSMCSent
+	log.Printf("UE %s: sent Security Mode Command, state=%s", ue.SUPI, ue.State)
+	return [][]byte{dlNAS}, nil
+}
+
+// handleSecurityModeComplete completes registration via the backend and sends Registration Accept.
+func (p *SCTPProxy) handleSecurityModeComplete(ue *UEContext, ngapCtx *ngapCodec.NGAPContext) ([][]byte, error) {
+	if ue.State != UEStateSMCSent {
+		return nil, fmt.Errorf("UE %s: SMC complete in unexpected state %s", ue.SUPI, ue.State)
+	}
+
+	_ = ngapCtx // NAS PDU already validated by caller
+
+	log.Printf("UE %s: Security Mode Complete received, calling registration", ue.SUPI)
+
+	// Call amf-initial-registration with skip_auth=true
+	regResp, err := p.backend.Register(context.Background(), &RegisterRequest{
+		SUPI:     ue.SUPI,
+		SkipAuth: true,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("register %s: %w", ue.SUPI, err)
+	}
+
+	// Build Registration Accept NAS message
+	var regAcceptNAS []byte
+	if regResp.NASMessage != "" {
+		regAcceptNAS, _ = hex.DecodeString(regResp.NASMessage)
+	}
+	if len(regAcceptNAS) == 0 {
+		regAcceptNAS = nas.EncodeRegistrationAccept(&nas.RegistrationAccept{
+			RegistrationResult: nas.RegResult3GPPAccess,
+			GUTI:               regResp.GUTI,
+			T3512Value:         nas.T3512Default,
+		})
+	}
+
+	// Send via InitialContextSetupRequest (wraps Registration Accept)
+	icsr, err := ngapCodec.BuildInitialContextSetupRequest(
+		ue.AMFUeNgapID, ue.RANUeNgapID,
+		regAcceptNAS, p.plmnBytes, p.sst, p.sd,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("build initial context setup: %w", err)
+	}
+
+	ue.State = UEStateRegistered
+	log.Printf("UE %s: registered, sent InitialContextSetupRequest, state=%s", ue.SUPI, ue.State)
+	return [][]byte{icsr}, nil
+}
+
+// handleULNASTransport handles UL NAS Transport messages (e.g., PDU Session Establishment).
+func (p *SCTPProxy) handleULNASTransport(ue *UEContext, ngapCtx *ngapCodec.NGAPContext) ([][]byte, error) {
+	_, pduSessionID, payload, dnn, snssai, err := nas.DecodeULNASTransport(ngapCtx.NASPDU)
+	if err != nil {
+		return nil, fmt.Errorf("decode UL NAS transport: %w", err)
+	}
+
+	if len(payload) < 4 {
+		return nil, fmt.Errorf("UL NAS transport payload too short")
+	}
+
+	// Check if inner message is PDU Session Establishment Request
+	if payload[0] == nas.EPD5GSM && payload[3] == nas.MsgTypePDUSessionEstablishmentRequest {
+		return p.handlePDUSessionEstablishment(ue, pduSessionID, dnn, snssai)
+	}
+
+	log.Printf("UE %s: unhandled UL NAS payload EPD=0x%02x type=0x%02x", ue.SUPI, payload[0], payload[3])
+	return nil, nil
+}
+
+func (p *SCTPProxy) handlePDUSessionEstablishment(ue *UEContext, pduSessionID uint8, dnn string, snssai *nas.NSSAI) ([][]byte, error) {
+	if dnn == "" {
+		dnn = "internet"
+	}
+	sst := p.sst
+	sd := hex.EncodeToString(p.sd)
+	if snssai != nil {
+		sst = snssai.SST
+		if snssai.HasSD {
+			sd = hex.EncodeToString(snssai.SD[:])
+		}
+	}
+
+	log.Printf("UE %s: PDU Session Establishment Request, session=%d dnn=%s", ue.SUPI, pduSessionID, dnn)
+
+	_, err := p.backend.PDUSessionCreate(context.Background(), &PDUSessionRequest{
+		SUPI:         ue.SUPI,
+		PDUSessionID: pduSessionID,
+		DNN:          dnn,
+		SNSSAISSt:    sst,
+		SNSSAISD:     sd,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("pdu session create for %s: %w", ue.SUPI, err)
+	}
+
+	// Build a minimal PDU Session Establishment Accept NAS, wrapped in DL NAS Transport
+	// For eval purposes, a simple accept with dummy IP is sufficient
+	pduAcceptNAS := buildPDUSessionAcceptNAS(pduSessionID)
+	dlNAS, err := ngapCodec.BuildDownlinkNASTransport(ue.AMFUeNgapID, ue.RANUeNgapID, pduAcceptNAS)
+	if err != nil {
+		return nil, fmt.Errorf("build downlink nas (pdu accept): %w", err)
+	}
+
+	ue.State = UEStatePDUSessionActive
+	log.Printf("UE %s: PDU session %d established, state=%s", ue.SUPI, pduSessionID, ue.State)
+	return [][]byte{dlNAS}, nil
+}
+
+// buildPDUSessionAcceptNAS builds a DL NAS Transport containing a PDU Session Establishment Accept.
+func buildPDUSessionAcceptNAS(pduSessionID uint8) []byte {
+	// Inner: PDU Session Establishment Accept (TS 24.501 Section 8.3.2)
+	inner := []byte{
+		nas.EPD5GSM,       // EPD
+		pduSessionID,      // PDU Session ID
+		0x00,              // PTI
+		0xC2,              // PDU Session Establishment Accept message type
+		0x01,              // Selected PDU session type: IPv4
+		0x01,              // Selected SSC mode: SSC mode 1
+		0x09, 0x06,        // QoS rules length = 6
+		0x01,              // QoS rule ID = 1
+		0x03,              // Rule length = 3
+		0x01,              // Rule operation: create new QoS rule
+		0x01,              // Number of packet filters = 1 (match all)
+		0x06,              // QFI = 6, DQR = 0
+		0x09,              // Session-AMBR length indicator
+		0x01,              // DL unit: kbps
+		0x00, 0x00,        // DL session AMBR
+		0x01,              // UL unit: kbps
+		0x00, 0x00,        // UL session AMBR
+		0x29, 0x05, 0x01,  // PDU address type + length: IPv4
+		0x0A, 0x0A, 0x00, 0x01, // IP: 10.10.0.1
+	}
+
+	// Outer: DL NAS Transport wrapping the inner message
+	containerLen := len(inner)
+	outer := []byte{
+		nas.EPD5GMM,                        // EPD
+		0x00,                               // Security header: plain
+		nas.MsgTypeDLNASTransport,          // DL NAS Transport message type
+		0x01,                               // Payload container type: N1 SM
+		byte(containerLen >> 8), byte(containerLen), // Payload container length
+	}
+	outer = append(outer, inner...)
+
+	// PDU session ID IE (IEI 0x12)
+	outer = append(outer, 0x12, pduSessionID)
+
+	return outer
 }

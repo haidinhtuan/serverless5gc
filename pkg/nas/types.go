@@ -38,8 +38,15 @@ const (
 	MsgTypeSecurityModeCommand      = 0x5D
 	MsgTypeSecurityModeComplete     = 0x5E
 	MsgTypeSecurityModeReject       = 0x5F
+	MsgTypeULNASTransport           = 0x67
+	MsgTypeDLNASTransport           = 0x68
 	MsgTypeIdentityRequest          = 0x5B
 	MsgTypeIdentityResponse         = 0x5C
+)
+
+// 5GSM Message Types (TS 24.501 Table 9.8.1)
+const (
+	MsgTypePDUSessionEstablishmentRequest = 0xC1
 )
 
 // 5GMM Cause codes (TS 24.501 Table 9.11.3.2.1)

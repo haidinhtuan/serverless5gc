@@ -391,3 +391,253 @@ func TestDecodeEncodeNSSAI(t *testing.T) {
 		t.Errorf("decoded[1].SD = %v, want [1 2 3]", decoded[1].SD)
 	}
 }
+
+func TestEncodeAuthenticationRequest(t *testing.T) {
+	rand := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
+		0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F, 0x10}
+	autn := []byte{0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
+		0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F, 0x20}
+
+	data := EncodeAuthenticationRequest(rand, autn)
+
+	// Total: 3(header) + 1(ngKSI) + 4(ABBA) + 1(RAND IEI) + 16(RAND) + 1(AUTN IEI) + 1(AUTN len) + 16(AUTN) = 43
+	if len(data) != 43 {
+		t.Fatalf("total length = %d, want 43", len(data))
+	}
+	if data[0] != EPD5GMM {
+		t.Errorf("EPD = 0x%02x, want 0x%02x", data[0], EPD5GMM)
+	}
+	if data[1] != SecurityHeaderPlain {
+		t.Errorf("SecurityHeader = 0x%02x, want 0x%02x", data[1], SecurityHeaderPlain)
+	}
+	if data[2] != MsgTypeAuthenticationRequest {
+		t.Errorf("MessageType = 0x%02x, want 0x%02x", data[2], MsgTypeAuthenticationRequest)
+	}
+	if data[3] != 0x00 {
+		t.Errorf("ngKSI = 0x%02x, want 0x00", data[3])
+	}
+	// ABBA: length=0x0002, value=0x0000
+	if data[4] != 0x00 || data[5] != 0x02 || data[6] != 0x00 || data[7] != 0x00 {
+		t.Errorf("ABBA = %v, want [00 02 00 00]", data[4:8])
+	}
+	// RAND: IEI 0x21 + 16 bytes
+	if data[8] != 0x21 {
+		t.Errorf("RAND IEI = 0x%02x, want 0x21", data[8])
+	}
+	for i := 0; i < 16; i++ {
+		if data[9+i] != rand[i] {
+			t.Errorf("RAND[%d] = 0x%02x, want 0x%02x", i, data[9+i], rand[i])
+		}
+	}
+	// AUTN: IEI 0x20 + length 0x10 + 16 bytes
+	if data[25] != 0x20 {
+		t.Errorf("AUTN IEI = 0x%02x, want 0x20", data[25])
+	}
+	if data[26] != 0x10 {
+		t.Errorf("AUTN length = 0x%02x, want 0x10", data[26])
+	}
+	for i := 0; i < 16; i++ {
+		if data[27+i] != autn[i] {
+			t.Errorf("AUTN[%d] = 0x%02x, want 0x%02x", i, data[27+i], autn[i])
+		}
+	}
+}
+
+func TestDecodeAuthenticationResponse(t *testing.T) {
+	res := []byte{0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF, 0x11, 0x22,
+		0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0x00}
+	data := []byte{
+		0x7E,       // EPD
+		0x00,       // Security header
+		0x57,       // Message type: Authentication Response
+		0x00, 0x10, // Length = 16
+	}
+	data = append(data, res...)
+
+	got, err := DecodeAuthenticationResponse(data)
+	if err != nil {
+		t.Fatalf("DecodeAuthenticationResponse error: %v", err)
+	}
+	if len(got) != 16 {
+		t.Fatalf("RES* length = %d, want 16", len(got))
+	}
+	for i := 0; i < 16; i++ {
+		if got[i] != res[i] {
+			t.Errorf("RES*[%d] = 0x%02x, want 0x%02x", i, got[i], res[i])
+		}
+	}
+}
+
+func TestDecodeAuthenticationResponse_TooShort(t *testing.T) {
+	_, err := DecodeAuthenticationResponse([]byte{0x7E, 0x00, 0x57})
+	if err == nil {
+		t.Fatal("expected error for too-short message")
+	}
+}
+
+func TestDecodeAuthenticationResponse_InvalidEPD(t *testing.T) {
+	data := []byte{0xFF, 0x00, 0x57, 0x00, 0x01, 0xAA}
+	_, err := DecodeAuthenticationResponse(data)
+	if err == nil {
+		t.Fatal("expected error for invalid EPD")
+	}
+}
+
+func TestDecodeAuthenticationResponse_WrongMsgType(t *testing.T) {
+	data := []byte{0x7E, 0x00, 0x56, 0x00, 0x01, 0xAA}
+	_, err := DecodeAuthenticationResponse(data)
+	if err == nil {
+		t.Fatal("expected error for wrong message type")
+	}
+}
+
+func TestDecodePDUSessionEstablishmentRequest(t *testing.T) {
+	data := []byte{
+		0x2E, // EPD: 5GSM
+		0x05, // PDU session ID = 5
+		0x01, // PTI
+		0xC1, // Message type: PDU Session Establishment Request
+		0x00, 0x00, // Integrity protection max data rate
+		0x91, // PDU session type: IPv4 (IEI 0x09, value 0x01)
+	}
+
+	sessID, sessType, err := DecodePDUSessionEstablishmentRequest(data)
+	if err != nil {
+		t.Fatalf("DecodePDUSessionEstablishmentRequest error: %v", err)
+	}
+	if sessID != 5 {
+		t.Errorf("pduSessionID = %d, want 5", sessID)
+	}
+	if sessType != 0x01 {
+		t.Errorf("pduSessionType = 0x%02x, want 0x01", sessType)
+	}
+}
+
+func TestDecodePDUSessionEstablishmentRequest_DefaultType(t *testing.T) {
+	data := []byte{
+		0x2E, // EPD: 5GSM
+		0x01, // PDU session ID = 1
+		0x00, // PTI
+		0xC1, // Message type
+		0x00, 0x00, // Integrity protection max data rate
+	}
+
+	sessID, sessType, err := DecodePDUSessionEstablishmentRequest(data)
+	if err != nil {
+		t.Fatalf("error: %v", err)
+	}
+	if sessID != 1 {
+		t.Errorf("pduSessionID = %d, want 1", sessID)
+	}
+	if sessType != 0x01 { // default IPv4
+		t.Errorf("pduSessionType = 0x%02x, want 0x01 (default IPv4)", sessType)
+	}
+}
+
+func TestDecodePDUSessionEstablishmentRequest_InvalidEPD(t *testing.T) {
+	data := []byte{0xFF, 0x01, 0x00, 0xC1, 0x00, 0x00}
+	_, _, err := DecodePDUSessionEstablishmentRequest(data)
+	if err == nil {
+		t.Fatal("expected error for invalid EPD")
+	}
+}
+
+func TestDecodePDUSessionEstablishmentRequest_TooShort(t *testing.T) {
+	_, _, err := DecodePDUSessionEstablishmentRequest([]byte{0x2E, 0x01, 0x00})
+	if err == nil {
+		t.Fatal("expected error for too-short message")
+	}
+}
+
+func TestDecodeULNASTransport(t *testing.T) {
+	// Inner PDU Session Establishment Request
+	innerPDU := []byte{0x2E, 0x05, 0x01, 0xC1, 0x00, 0x00, 0x91}
+
+	data := []byte{
+		0x7E,       // EPD
+		0x00,       // Security header
+		0x67,       // Message type: UL NAS Transport
+		0x01,       // Payload container type = 1 (N1 SM)
+	}
+	// Payload container length (2 bytes, big-endian)
+	data = append(data, byte(len(innerPDU)>>8), byte(len(innerPDU)))
+	data = append(data, innerPDU...)
+	// PDU session ID (IEI 0x12 + value)
+	data = append(data, 0x12, 0x05)
+	// Request type (IEI 0x08, value 0x01 = initial)
+	data = append(data, 0x81)
+	// S-NSSAI (IEI 0x22, TLV)
+	data = append(data, 0x22, 0x04, 0x01, 0xAA, 0xBB, 0xCC)
+	// DNN (IEI 0x25, TLV) = "internet"
+	dnnLabel := []byte("internet")
+	data = append(data, 0x25, byte(1+len(dnnLabel)), byte(len(dnnLabel)))
+	data = append(data, dnnLabel...)
+
+	pctType, sessID, payload, dnn, snssai, err := DecodeULNASTransport(data)
+	if err != nil {
+		t.Fatalf("DecodeULNASTransport error: %v", err)
+	}
+	if pctType != 0x01 {
+		t.Errorf("payloadContainerType = 0x%02x, want 0x01", pctType)
+	}
+	if sessID != 0x05 {
+		t.Errorf("pduSessionID = %d, want 5", sessID)
+	}
+	if len(payload) != len(innerPDU) {
+		t.Errorf("payload length = %d, want %d", len(payload), len(innerPDU))
+	}
+	if dnn != "internet" {
+		t.Errorf("dnn = %q, want %q", dnn, "internet")
+	}
+	if snssai == nil {
+		t.Fatal("snssai is nil")
+	}
+	if snssai.SST != 0x01 {
+		t.Errorf("snssai.SST = %d, want 1", snssai.SST)
+	}
+	if !snssai.HasSD {
+		t.Error("snssai.HasSD should be true")
+	}
+	if snssai.SD != [3]byte{0xAA, 0xBB, 0xCC} {
+		t.Errorf("snssai.SD = %v, want [AA BB CC]", snssai.SD)
+	}
+}
+
+func TestDecodeULNASTransport_TooShort(t *testing.T) {
+	_, _, _, _, _, err := DecodeULNASTransport([]byte{0x7E, 0x00, 0x67})
+	if err == nil {
+		t.Fatal("expected error for too-short message")
+	}
+}
+
+func TestDecodeULNASTransport_InvalidEPD(t *testing.T) {
+	data := []byte{0xFF, 0x00, 0x67, 0x01, 0x00, 0x01, 0xAA}
+	_, _, _, _, _, err := DecodeULNASTransport(data)
+	if err == nil {
+		t.Fatal("expected error for invalid EPD")
+	}
+}
+
+func TestDecodeULNASTransport_WrongMsgType(t *testing.T) {
+	data := []byte{0x7E, 0x00, 0x41, 0x01, 0x00, 0x01, 0xAA}
+	_, _, _, _, _, err := DecodeULNASTransport(data)
+	if err == nil {
+		t.Fatal("expected error for wrong message type")
+	}
+}
+
+func TestDecodeDNN(t *testing.T) {
+	// "internet" = 0x08 + "internet"
+	data := []byte{0x08, 'i', 'n', 't', 'e', 'r', 'n', 'e', 't'}
+	got := decodeDNN(data)
+	if got != "internet" {
+		t.Errorf("decodeDNN = %q, want %q", got, "internet")
+	}
+
+	// "example.com" = 0x07 "example" 0x03 "com"
+	data = []byte{0x07, 'e', 'x', 'a', 'm', 'p', 'l', 'e', 0x03, 'c', 'o', 'm'}
+	got = decodeDNN(data)
+	if got != "example.com" {
+		t.Errorf("decodeDNN = %q, want %q", got, "example.com")
+	}
+}
