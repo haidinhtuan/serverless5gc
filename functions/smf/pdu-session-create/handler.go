@@ -218,6 +218,19 @@ func Handle(req handler.Request) (handler.Response, error) {
 		policyResp = SmPolicyDecision{QFI: 1, AMBRUL: 1000000, AMBRDL: 5000000, FiveQI: 9}
 	}
 
+	// R17: NSACF slice admission check for PDU session (TS 29.536)
+	if os.Getenv("ENABLE_NSACF") == "true" && SBI != nil {
+		var checkResp struct {
+			Allowed bool `json:"allowed"`
+		}
+		if err := SBI.CallFunction("nsacf-slice-availability-check", map[string]interface{}{
+			"snssai":     smReq.SNSSAI,
+			"check_type": "PDU_SESSION",
+		}, &checkResp); err == nil && !checkResp.Allowed {
+			return errorResp(http.StatusForbidden, "slice not available for PDU session"), nil
+		}
+	}
+
 	// Step 3: Allocate UE IP address from pool (TS 29.244 Section 5.21)
 	ueIP, err := allocateIP(ctx)
 	if err != nil {
@@ -270,6 +283,50 @@ func Handle(req handler.Request) (handler.Response, error) {
 	if err := Store.Put(ctx, key, session); err != nil {
 		releaseIP(ctx, ueIP)
 		return errorResp(http.StatusInternalServerError, "store session: %s", err), nil
+	}
+
+	// R17: BSF binding registration (TS 29.521)
+	if os.Getenv("ENABLE_BSF") == "true" && SBI != nil {
+		var bindResp struct {
+			BindingID string `json:"binding_id"`
+		}
+		SBI.CallFunction("bsf-binding-register", map[string]interface{}{
+			"supi":           smReq.SUPI,
+			"dnn":            smReq.DNN,
+			"snssai":         smReq.SNSSAI,
+			"ue_address":     ueIP,
+			"pdu_session_id": sessionID,
+		}, &bindResp)
+		if bindResp.BindingID != "" {
+			session.BSFBindingID = bindResp.BindingID
+			Store.Put(ctx, key, session)
+		}
+	}
+
+	// R17: CHF charging session creation (TS 32.291)
+	if os.Getenv("ENABLE_CHARGING") == "true" && SBI != nil {
+		var chgResp struct {
+			ChargingID string `json:"charging_id"`
+		}
+		SBI.CallFunction("chf-charging-create", map[string]interface{}{
+			"supi":           smReq.SUPI,
+			"pdu_session_id": sessionID,
+			"dnn":            smReq.DNN,
+			"snssai":         smReq.SNSSAI,
+		}, &chgResp)
+		if chgResp.ChargingID != "" {
+			session.ChargingID = chgResp.ChargingID
+			Store.Put(ctx, key, session)
+		}
+	}
+
+	// R17: NSACF session counter increment (TS 29.536)
+	if os.Getenv("ENABLE_NSACF") == "true" && SBI != nil {
+		SBI.CallFunction("nsacf-update-counters", map[string]interface{}{
+			"snssai":       smReq.SNSSAI,
+			"counter_type": "PDU_SESSION",
+			"operation":    "INCREMENT",
+		}, nil)
 	}
 
 	// Step 6: Return SM context response to AMF

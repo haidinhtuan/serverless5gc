@@ -16,6 +16,7 @@ import (
 	handler "github.com/openfaas/templates-sdk/go-http"
 	"github.com/tdinh/serverless5gc/pkg/models"
 	"github.com/tdinh/serverless5gc/pkg/nas"
+	"github.com/tdinh/serverless5gc/pkg/sbi"
 	"github.com/tdinh/serverless5gc/pkg/state"
 )
 
@@ -23,6 +24,16 @@ var store state.KVStore
 
 // SetStore injects a KVStore (used in tests).
 func SetStore(s state.KVStore) { store = s }
+
+// SBICaller abstracts inter-NF communication for testability.
+type SBICaller interface {
+	CallFunction(funcName string, payload interface{}, result interface{}) error
+}
+
+var sbiClient SBICaller
+
+// SetSBI injects an SBI caller (used in tests).
+func SetSBI(s SBICaller) { sbiClient = s }
 
 func init() {
 	if store != nil {
@@ -33,6 +44,7 @@ func init() {
 		addr = "localhost:6379"
 	}
 	store = state.NewRedisStore(addr)
+	sbiClient = sbi.NewClient()
 }
 
 // DeregistrationRequest is the JSON body for UE deregistration.
@@ -85,6 +97,17 @@ func Handle(req handler.Request) (handler.Response, error) {
 	// State transition: RM-REGISTERED → RM-DEREGISTERED
 	ueCtx.RegistrationState = "DEREGISTERED"
 	ueCtx.CmState = "IDLE"
+
+	// R17: NSACF counter decrement (TS 29.536)
+	if os.Getenv("ENABLE_NSACF") == "true" && sbiClient != nil {
+		for _, snssai := range ueCtx.AllowedNSSAI {
+			sbiClient.CallFunction("nsacf-update-counters", map[string]interface{}{
+				"snssai":       snssai,
+				"counter_type": "UE",
+				"operation":    "DECREMENT",
+			}, nil)
+		}
+	}
 
 	// Delete UE context from store (release AMF resources)
 	if err := store.Delete(ctx, key); err != nil {

@@ -230,6 +230,32 @@ func Handle(req handler.Request) (handler.Response, error) {
 		allowedNSSAI = subData.AccessAndMobility.NSSAI
 	}
 
+	// R17: NSACF slice admission control (TS 29.536)
+	if os.Getenv("ENABLE_NSACF") == "true" && sbiClient != nil {
+		for _, snssai := range allowedNSSAI {
+			var checkResp struct {
+				Allowed bool `json:"allowed"`
+			}
+			checkReq := map[string]interface{}{
+				"snssai":     snssai,
+				"check_type": "UE",
+			}
+			if err := sbiClient.CallFunction("nsacf-slice-availability-check", checkReq, &checkResp); err == nil && !checkResp.Allowed {
+				return problemResp(http.StatusForbidden,
+					"SLICE_NOT_AVAILABLE",
+					fmt.Sprintf("slice SST=%d SD=%s not available for UE admission", snssai.SST, snssai.SD)), nil
+			}
+		}
+		// Increment UE counters for each allowed slice
+		for _, snssai := range allowedNSSAI {
+			sbiClient.CallFunction("nsacf-update-counters", map[string]interface{}{
+				"snssai":       snssai,
+				"counter_type": "UE",
+				"operation":    "INCREMENT",
+			}, nil)
+		}
+	}
+
 	guti := fmt.Sprintf("5g-guti-%s", regReq.SUPI)
 	ueCtx := models.UEContext{
 		SUPI:              regReq.SUPI,

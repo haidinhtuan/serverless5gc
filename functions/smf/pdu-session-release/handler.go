@@ -12,6 +12,7 @@ import (
 
 	handler "github.com/openfaas/templates-sdk/go-http"
 	"github.com/tdinh/serverless5gc/pkg/models"
+	"github.com/tdinh/serverless5gc/pkg/sbi"
 	"github.com/tdinh/serverless5gc/pkg/state"
 )
 
@@ -27,7 +28,16 @@ var Store state.KVStore
 var PFCP PFCPDeleter
 
 func SetStore(s state.KVStore) { Store = s }
-func SetPFCP(p PFCPDeleter) { PFCP = p }
+func SetPFCP(p PFCPDeleter)     { PFCP = p }
+
+// SBICaller abstracts inter-NF communication for testability.
+type SBICaller interface {
+	CallFunction(funcName string, payload interface{}, result interface{}) error
+}
+
+var SBI SBICaller
+
+func SetSBI(s SBICaller) { SBI = s }
 
 func init() {
 	if Store != nil {
@@ -38,6 +48,7 @@ func init() {
 		addr = "localhost:6379"
 	}
 	Store = state.NewRedisStore(addr)
+	SBI = sbi.NewClient()
 }
 
 // ReleaseSMContextRequest per TS 29.502 (Nsmf_PDUSession_ReleaseSMContext).
@@ -85,6 +96,29 @@ func Handle(req handler.Request) (handler.Response, error) {
 	// Step 3: Release UE IP address back to pool
 	if session.UEAddress != "" {
 		Store.Delete(ctx, "ip-pool/allocated/"+session.UEAddress)
+	}
+
+	// R17: CHF charging release (TS 32.291)
+	if os.Getenv("ENABLE_CHARGING") == "true" && SBI != nil && session.ChargingID != "" {
+		SBI.CallFunction("chf-charging-release", map[string]interface{}{
+			"charging_id": session.ChargingID,
+		}, nil)
+	}
+
+	// R17: BSF binding deregistration (TS 29.521)
+	if os.Getenv("ENABLE_BSF") == "true" && SBI != nil && session.BSFBindingID != "" {
+		SBI.CallFunction("bsf-binding-deregister", map[string]interface{}{
+			"binding_id": session.BSFBindingID,
+		}, nil)
+	}
+
+	// R17: NSACF session counter decrement (TS 29.536)
+	if os.Getenv("ENABLE_NSACF") == "true" && SBI != nil {
+		SBI.CallFunction("nsacf-update-counters", map[string]interface{}{
+			"snssai":       session.SNSSAI,
+			"counter_type": "PDU_SESSION",
+			"operation":    "DECREMENT",
+		}, nil)
 	}
 
 	// Step 4: Remove session from store
