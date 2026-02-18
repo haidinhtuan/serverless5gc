@@ -1,0 +1,30 @@
+info:
+  version: 1.0.3
+  description: WebUI initial local configuration
+
+configuration:
+  mongodb:
+    name: free5gc
+    url: mongodb://db:27017
+  nrfUri: http://nrf:8000
+  nrfCertPem: cert/nrf.pem
+  webServer:
+    scheme: http
+    ipv4Address: 0.0.0.0
+    port: 5000
+  billingServer:
+    enable: true
+    hostIPv4: 0.0.0.0
+    listenPort: 2121
+    portRange:
+      start: 2123
+      end: 2130
+    basePath: /tmp/webconsole
+    port: 2122
+    tls:
+      pem: cert/chf.pem
+      key: cert/chf.key
+
+logger:
+  enable: true
+  level: info

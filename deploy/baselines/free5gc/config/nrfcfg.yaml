@@ -18,4 +18,5 @@ configuration:
     - nnrf-disc
 
 logger:
+  enable: true
   level: info

@@ -20,4 +20,5 @@ configuration:
       mnc: "01"
 
 logger:
+  enable: true
   level: info

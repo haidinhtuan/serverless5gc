@@ -3,26 +3,29 @@ info:
   description: PCF initial local configuration
 
 configuration:
+  pcfName: PCF
   sbi:
     scheme: http
     registerIPv4: pcf
     bindingIPv4: 0.0.0.0
     port: 8000
-  serviceNameList:
-    - npcf-am-policy-control
-    - npcf-smpolicycontrol
-    - npcf-bdtpolicycontrol
-    - npcf-policyauthorization
-    - npcf-eventexposure
-    - npcf-ue-policy-control
+  timeFormat: 2019-01-02 15:04:05
+  defaultBdtRefId: BdtPolicyId-
   nrfUri: http://nrf:8000
+  serviceList:
+    - serviceName: npcf-am-policy-control
+    - serviceName: npcf-smpolicycontrol
+      suppFeat: 3fff
+    - serviceName: npcf-bdtpolicycontrol
+    - serviceName: npcf-policyauthorization
+      suppFeat: 3
+    - serviceName: npcf-eventexposure
+    - serviceName: npcf-ue-policy-control
   mongodb:
     name: free5gc
     url: mongodb://db:27017
-  plmnList:
-    - mcc: "001"
-      mnc: "01"
   locality: area1
 
 logger:
+  enable: true
   level: info

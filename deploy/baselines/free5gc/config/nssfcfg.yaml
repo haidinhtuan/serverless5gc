@@ -31,4 +31,5 @@ configuration:
           nsiId: 1
 
 logger:
+  enable: true
   level: info

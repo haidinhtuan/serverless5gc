@@ -1,5 +1,5 @@
 info:
-  version: 1.0.2
+  version: 1.1.0
   description: UDR initial local configuration
 
 configuration:
@@ -10,6 +10,7 @@ configuration:
     port: 8000
   serviceNameList:
     - nudr-dr
+  dbConnectorType: mongodb
   nrfUri: http://nrf:8000
   plmnSupportList:
     - mcc: "001"
@@ -19,4 +20,5 @@ configuration:
     url: mongodb://db:27017
 
 logger:
+  enable: true
   level: info

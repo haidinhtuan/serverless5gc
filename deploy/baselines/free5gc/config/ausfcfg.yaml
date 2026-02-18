@@ -17,4 +17,5 @@ configuration:
   groupId: ausfGroup001
 
 logger:
+  enable: true
   level: info

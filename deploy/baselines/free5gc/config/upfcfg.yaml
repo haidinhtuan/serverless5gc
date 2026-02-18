@@ -4,6 +4,8 @@ description: UPF initial local configuration
 pfcp:
   addr: 0.0.0.0
   nodeID: upf
+  retransTimeout: 1s
+  maxRetrans: 3
 
 gtpu:
   forwarder: gtp5g
@@ -16,4 +18,5 @@ dnnList:
     cidr: 10.60.0.0/16
 
 logger:
+  enable: true
   level: info

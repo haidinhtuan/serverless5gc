@@ -59,6 +59,42 @@ configuration:
   t3502Value: 720
   t3512Value: 3600
   non3gppDeregistrationTimerValue: 3240
+  t3513:
+    enable: true
+    expireTime: 6s
+    maxRetryTimes: 4
+  t3522:
+    enable: true
+    expireTime: 6s
+    maxRetryTimes: 4
+  t3550:
+    enable: true
+    expireTime: 6s
+    maxRetryTimes: 4
+  t3555:
+    enable: true
+    expireTime: 6s
+    maxRetryTimes: 4
+  t3560:
+    enable: true
+    expireTime: 6s
+    maxRetryTimes: 4
+  t3565:
+    enable: true
+    expireTime: 6s
+    maxRetryTimes: 4
+  t3570:
+    enable: true
+    expireTime: 6s
+    maxRetryTimes: 4
+  locality: area1
+  sctp:
+    numOstreams: 3
+    maxInstreams: 5
+    maxAttempts: 2
+    maxInitTimeout: 2
+  defaultUECtxReq: false
 
 logger:
+  enable: true
   level: info
