@@ -110,44 +110,46 @@ type AMBR struct {
 // IP pool management - tracks allocated IPs in Redis to prevent duplicates
 // per TS 29.244 Section 5.21.
 var (
-	ipPoolMu  sync.Mutex
-	ipPoolIdx uint32 = 1
+	ipPoolMu     sync.Mutex
+	ipPoolSubnet uint32 // current third-octet (0-255)
+	ipPoolHost   uint32 = 1  // current fourth-octet (1-254)
 )
 
-// IPPoolBase is the base network for UE address allocation (configurable via UE_IP_POOL env).
-// Default: 10.45.0.0/16 per common 5GC deployments.
-var IPPoolBase = "10.45.0"
+// IPPoolPrefix is the first two octets for UE address allocation (configurable via UE_IP_POOL env).
+// Default: 10.45 — yields 10.45.0.1 through 10.45.255.254 (65,024 addresses).
+var IPPoolPrefix = "10.45"
 
 func init() {
-	if base := os.Getenv("UE_IP_POOL"); base != "" {
-		IPPoolBase = base
+	if prefix := os.Getenv("UE_IP_POOL"); prefix != "" {
+		IPPoolPrefix = prefix
 	}
 }
 
-// allocateIP assigns a UE IPv4 address from the pool and records it in Redis.
+// allocateIP assigns a UE IPv4 address from the /16 pool and records it in Redis.
 func allocateIP(ctx context.Context) (string, error) {
 	ipPoolMu.Lock()
 	defer ipPoolMu.Unlock()
 
-	// Try up to 254 addresses in the current /24 block
-	for attempts := 0; attempts < 254; attempts++ {
-		ip := fmt.Sprintf("%s.%d", IPPoolBase, ipPoolIdx)
-		ipPoolIdx++
-		if ipPoolIdx > 254 {
-			ipPoolIdx = 1
+	// Try up to 65024 addresses (256 subnets × 254 hosts)
+	for attempts := 0; attempts < 65024; attempts++ {
+		ip := fmt.Sprintf("%s.%d.%d", IPPoolPrefix, ipPoolSubnet, ipPoolHost)
+		ipPoolHost++
+		if ipPoolHost > 254 {
+			ipPoolHost = 1
+			ipPoolSubnet++
+			if ipPoolSubnet > 255 {
+				ipPoolSubnet = 0
+			}
 		}
 
-		// Check if IP is already allocated (tracked in Redis)
 		key := "ip-pool/allocated/" + ip
 		var existing string
 		if err := Store.Get(ctx, key, &existing); err != nil {
-			// Key not found = IP is available
 			if err := Store.Put(ctx, key, ip); err != nil {
 				return "", fmt.Errorf("record IP allocation: %w", err)
 			}
 			return ip, nil
 		}
-		// IP already allocated, try next
 	}
 	return "", fmt.Errorf("IP pool exhausted")
 }
@@ -161,7 +163,8 @@ func releaseIP(ctx context.Context, ip string) {
 func ResetIPPool() {
 	ipPoolMu.Lock()
 	defer ipPoolMu.Unlock()
-	ipPoolIdx = 1
+	ipPoolSubnet = 0
+	ipPoolHost = 1
 }
 
 var seidCounter uint64
