@@ -1,6 +1,6 @@
 scenario: low
 description: "IoT/rural - 100 UEs, 1 reg/sec"
-duration_minutes: 30
+duration_minutes: 10
 runs: 3
 
 ueransim:

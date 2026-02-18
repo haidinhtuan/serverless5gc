@@ -1,6 +1,6 @@
 scenario: burst
 description: "Event/stadium burst - 500 UEs, 50 reg/sec spike"
-duration_minutes: 15
+duration_minutes: 5
 runs: 3
 
 ueransim:

@@ -1,6 +1,6 @@
 scenario: idle
 description: "Idle baseline - 0 active UEs, measures standing cost"
-duration_minutes: 30
+duration_minutes: 10
 runs: 3
 
 ueransim:

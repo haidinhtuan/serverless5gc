@@ -202,14 +202,27 @@ key: '465B5CE8B199B49FAA5F0A2EE238A6BC'
 op: 'E8ED289DEBA952E4283B54E88E6183CA'
 opType: 'OPC'
 amf: '8000'
+imei: '356938035643803'
+imeiSv: '4370816125816151'
 gnbSearchList:
   - ${LOADGEN_IP}
+uacAic:
+  mps: false
+  mcs: false
+uacAcc:
+  normalClass: 0
+  class11: false
+  class12: false
+  class13: false
+  class14: false
+  class15: false
 sessions:
   - type: 'IPv4'
     apn: 'internet'
     slice:
       sst: 1
       sd: 0x010203
+    emergency: false
 configured-nssai:
   - sst: 1
     sd: 0x010203
@@ -224,6 +237,9 @@ ciphering:
   EA1: true
   EA2: true
   EA3: true
+integrityMaxRate:
+  uplink: 'full'
+  downlink: 'full'
 UEEOF
 
     # Copy config files to loadgen VM.
@@ -236,7 +252,7 @@ UEEOF
     echo "Starting gNB..."
     ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "root@${LOADGEN_IP}" \
         "docker rm -f s5gc-gnb 2>/dev/null; \
-         docker run -d --name s5gc-gnb --network host --rm \
+         docker run -d --name s5gc-gnb --network host \
            --entrypoint nr-gnb \
            -v /tmp/s5gc-eval:/config:ro \
            ${UERANSIM_IMAGE} -c /config/gnb.yaml" \
@@ -252,26 +268,59 @@ UEEOF
         exit 1
     fi
 
-    # Start UEs via Docker with -n for multi-UE.
-    echo "Starting ${UE_COUNT} UEs..."
+    # Start UEs via Docker. Split into batches of BATCH_SIZE to avoid
+    # UERANSIM single-instance limits (crashes above ~200 UEs per gNB
+    # when started simultaneously). Each batch gets a separate container
+    # with a distinct IMSI range and a stagger delay between batches.
+    BATCH_SIZE=100
+    BATCH_STAGGER=20  # seconds between batches
+    NUM_BATCHES=$(( (UE_COUNT + BATCH_SIZE - 1) / BATCH_SIZE ))
+
+    echo "Starting ${UE_COUNT} UEs in ${NUM_BATCHES} batches of ${BATCH_SIZE}..."
+
+    # Clean up any leftover UE containers.
     ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "root@${LOADGEN_IP}" \
-        "docker rm -f s5gc-ue 2>/dev/null; \
-         docker run -d --name s5gc-ue --network host --rm \
-           --entrypoint nr-ue \
-           -v /tmp/s5gc-eval:/config:ro \
-           ${UERANSIM_IMAGE} -c /config/ue.yaml -n ${UE_COUNT} -l -r" \
-        > "${RESULTS_DIR}/ue.log" 2>&1
-    sleep 10
+        "for i in \$(seq 1 ${NUM_BATCHES}); do docker rm -f s5gc-ue\${i} 2>/dev/null; done" 2>/dev/null || true
+
+    for BATCH in $(seq 1 "$NUM_BATCHES"); do
+        BATCH_START=$(( (BATCH - 1) * BATCH_SIZE + 1 ))
+        BATCH_COUNT=$BATCH_SIZE
+        REMAINING=$((UE_COUNT - (BATCH - 1) * BATCH_SIZE))
+        [ "$BATCH_COUNT" -gt "$REMAINING" ] && BATCH_COUNT=$REMAINING
+        SUPI=$(printf "imsi-001010%09d" "$BATCH_START")
+
+        # Generate per-batch UE config with unique starting IMSI.
+        BATCH_UE_CONFIG="${RESULTS_DIR}/ue-batch${BATCH}.yaml"
+        sed "s/^supi: .*/supi: '${SUPI}'/" "$UE_CONFIG" > "$BATCH_UE_CONFIG"
+        scp -i "$SSH_KEY" -o StrictHostKeyChecking=no \
+            "$BATCH_UE_CONFIG" "root@${LOADGEN_IP}:/tmp/s5gc-eval/ue-batch${BATCH}.yaml"
+
+        echo "  Batch ${BATCH}/${NUM_BATCHES}: ${BATCH_COUNT} UEs from ${SUPI}"
+        ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "root@${LOADGEN_IP}" \
+            "docker run -d --name s5gc-ue${BATCH} --network host \
+               --entrypoint nr-ue \
+               -v /tmp/s5gc-eval:/config:ro \
+               ${UERANSIM_IMAGE} -c /config/ue-batch${BATCH}.yaml -n ${BATCH_COUNT}" \
+            > /dev/null 2>&1
+
+        # Stagger between batches to avoid gNB overload.
+        [ "$BATCH" -lt "$NUM_BATCHES" ] && sleep "$BATCH_STAGGER"
+    done
 
     echo "All UEs started. Waiting for ${DURATION} minutes..."
     sleep $((DURATION * 60))
 
-    # Stop UEs and gNB.
+    # Stop UEs and gNB, collect logs.
     echo "Stopping UERANSIM..."
     ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "root@${LOADGEN_IP}" \
-        "docker logs s5gc-gnb >> /tmp/s5gc-eval/gnb-full.log 2>&1; \
-         docker logs s5gc-ue >> /tmp/s5gc-eval/ue-full.log 2>&1; \
-         docker rm -f s5gc-ue s5gc-gnb 2>/dev/null || true"
+        "docker logs s5gc-gnb > /tmp/s5gc-eval/gnb-full.log 2>&1; \
+         > /tmp/s5gc-eval/ue-full.log; \
+         for i in \$(seq 1 ${NUM_BATCHES}); do \
+           echo '=== UE Batch '\$i' ===' >> /tmp/s5gc-eval/ue-full.log; \
+           docker logs s5gc-ue\${i} >> /tmp/s5gc-eval/ue-full.log 2>&1; \
+         done; \
+         for i in \$(seq 1 ${NUM_BATCHES}); do docker rm -f s5gc-ue\${i} 2>/dev/null; done; \
+         docker rm -f s5gc-gnb 2>/dev/null || true"
     # Retrieve logs.
     scp -i "$SSH_KEY" -o StrictHostKeyChecking=no \
         "root@${LOADGEN_IP}:/tmp/s5gc-eval/gnb-full.log" "${RESULTS_DIR}/gnb.log" 2>/dev/null || true

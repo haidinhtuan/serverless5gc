@@ -1,6 +1,6 @@
 scenario: medium
 description: "Suburban - 500 UEs, 5 reg/sec"
-duration_minutes: 30
+duration_minutes: 10
 runs: 3
 
 ueransim:

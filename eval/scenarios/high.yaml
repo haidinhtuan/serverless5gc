@@ -1,6 +1,6 @@
 scenario: high
 description: "Urban/dense - 1000 UEs, 20 reg/sec"
-duration_minutes: 30
+duration_minutes: 10
 runs: 3
 
 ueransim:
