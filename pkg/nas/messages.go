@@ -25,6 +25,7 @@ type MobileIdentity struct {
 type UESecurityCapability struct {
 	EA0, EA1, EA2, EA3 bool // 5G-EA ciphering algorithms supported
 	IA0, IA1, IA2, IA3 bool // 5G-IA integrity algorithms supported
+	RawBytes           []byte // raw bytes from Registration Request for exact replay in SMC
 }
 
 // NSSAI represents an S-NSSAI for NAS messages.
@@ -262,8 +263,8 @@ func EncodeAuthenticationRequest(rand []byte, autn []byte) []byte {
 		EPD5GMM,
 		SecurityHeaderPlain,
 		MsgTypeAuthenticationRequest,
-		0x00,       // ngKSI
-		0x00, 0x02, // ABBA length = 2
+		0x00, // ngKSI
+		0x02, // ABBA length = 2 (LV format: 1-byte length)
 		0x00, 0x00, // ABBA value
 	}
 	// Authentication parameter RAND (IEI 0x21, TV, 17 bytes)
@@ -294,13 +295,13 @@ func DecodeAuthenticationResponse(data []byte) ([]byte, error) {
 	for offset < len(data) {
 		iei := data[offset]
 		switch iei {
-		case 0x2D: // Authentication response parameter (TLV-E: IEI + 2-byte length + value)
+		case 0x2D: // Authentication response parameter (TLV: IEI + 1-byte length + value)
 			offset++
-			if offset+2 > len(data) {
+			if offset >= len(data) {
 				return nil, fmt.Errorf("auth response parameter truncated at length")
 			}
-			paramLen := int(binary.BigEndian.Uint16(data[offset : offset+2]))
-			offset += 2
+			paramLen := int(data[offset])
+			offset++
 			if offset+paramLen > len(data) {
 				return nil, fmt.Errorf("auth response parameter length %d exceeds data", paramLen)
 			}
@@ -547,6 +548,9 @@ func decodeGUTI(data []byte) string {
 
 func decodeUESecCap(data []byte) *UESecurityCapability {
 	cap := &UESecurityCapability{}
+	// Store raw bytes for exact replay in SMC
+	cap.RawBytes = make([]byte, len(data))
+	copy(cap.RawBytes, data)
 	if len(data) >= 1 {
 		cap.EA0 = (data[0] & 0x80) != 0
 		cap.EA1 = (data[0] & 0x40) != 0
@@ -563,6 +567,12 @@ func decodeUESecCap(data []byte) *UESecurityCapability {
 }
 
 func encodeUESecCap(cap *UESecurityCapability) []byte {
+	// Use raw bytes for exact replay if available
+	if len(cap.RawBytes) > 0 {
+		out := make([]byte, len(cap.RawBytes))
+		copy(out, cap.RawBytes)
+		return out
+	}
 	var ea, ia byte
 	if cap.EA0 { ea |= 0x80 }
 	if cap.EA1 { ea |= 0x40 }
