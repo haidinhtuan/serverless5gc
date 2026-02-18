@@ -14,8 +14,9 @@ import (
 
 	"github.com/free5gc/ngap/ngapType"
 	"github.com/ishidawataru/sctp"
-	ngapCodec "github.com/tdinh/serverless5gc/pkg/ngap"
+	"github.com/tdinh/serverless5gc/pkg/crypto"
 	"github.com/tdinh/serverless5gc/pkg/nas"
+	ngapCodec "github.com/tdinh/serverless5gc/pkg/ngap"
 	"github.com/tdinh/serverless5gc/pkg/state"
 )
 
@@ -36,6 +37,11 @@ type UEContext struct {
 	RANUeNgapID int64
 	XRES        []byte // stored for auth verification
 	DLSeqNum    byte   // NAS downlink sequence number for security header
+	KAUSF       []byte                    // anchor key from authentication
+	KNASint     []byte                    // NAS integrity key (128-EIA2)
+	KNASenc     []byte                    // NAS encryption key (128-EEA0 = null)
+	DLCount     uint32                    // downlink NAS count for MAC computation
+	UESecCap    *nas.UESecurityCapability // from Registration Request, replayed in SMC
 }
 
 // CoreBackend abstracts the 5GC function call interface.
@@ -284,6 +290,7 @@ func (p *SCTPProxy) handleInitialUEMessage(ngapCtx *ngapCodec.NGAPContext) ([][]
 		State:       UEStateIdle,
 		AMFUeNgapID: amfUeNgapID,
 		RANUeNgapID: ngapCtx.RANUeNgapID,
+		UESecCap:    regReq.UESecCap,
 	}
 	p.ueMap.Store(ngapCtx.RANUeNgapID, ue)
 
@@ -295,7 +302,7 @@ func (p *SCTPProxy) handleInitialUEMessage(ngapCtx *ngapCodec.NGAPContext) ([][]
 		return nil, fmt.Errorf("auth initiate for %s: %w", supi, err)
 	}
 
-	// Read XRES* from Redis for later verification
+	// Read XRES* and KAUSF from Redis for later verification and key derivation
 	var authPending struct {
 		XRES  string `json:"xres_star"`
 		KAUSF string `json:"kausf"`
@@ -304,6 +311,24 @@ func (p *SCTPProxy) handleInitialUEMessage(ngapCtx *ngapCodec.NGAPContext) ([][]
 		log.Printf("UE %s: warning: could not read auth-pending from Redis: %v", supi, err)
 	} else {
 		ue.XRES, _ = hex.DecodeString(authPending.XRES)
+		ue.KAUSF, _ = hex.DecodeString(authPending.KAUSF)
+	}
+
+	// Derive NAS security keys: KAUSF -> KAMF -> KNASenc/KNASint
+	if len(ue.KAUSF) > 0 {
+		abba := []byte{0x00, 0x00}
+		kamf, err := crypto.DeriveKAMF(ue.KAUSF, supi, abba)
+		if err != nil {
+			log.Printf("UE %s: warning: KAMF derivation failed: %v", supi, err)
+		} else {
+			knasEnc, knasInt, err := crypto.DeriveKNASKeys(kamf, nas.CipherAlg5GEA0, nas.IntegAlg5GIA2)
+			if err != nil {
+				log.Printf("UE %s: warning: KNASkey derivation failed: %v", supi, err)
+			} else {
+				ue.KNASenc = knasEnc
+				ue.KNASint = knasInt
+			}
+		}
 	}
 
 	// Build NAS Authentication Request
@@ -384,13 +409,23 @@ func (p *SCTPProxy) handleAuthResponse(ue *UEContext, ngapCtx *ngapCodec.NGAPCon
 	log.Printf("UE %s: Authentication Response verified", ue.SUPI)
 
 	// Build NAS Security Mode Command (must be integrity-protected per TS 24.501 Section 4.4.6)
+	replayedCap := ue.UESecCap
+	if replayedCap == nil {
+		replayedCap = &nas.UESecurityCapability{EA0: true, EA1: true, EA2: true, EA3: true, IA0: true, IA1: true, IA2: true, IA3: true}
+	}
 	smcPlain := nas.EncodeSecurityModeCommand(&nas.SecurityModeCommand{
-		SelectedCiphering: nas.CipherAlg5GEA0, // null ciphering for eval
-		SelectedIntegrity: nas.IntegAlg5GIA0,   // null integrity for eval
+		SelectedCiphering: nas.CipherAlg5GEA0, // null ciphering (plaintext)
+		SelectedIntegrity: nas.IntegAlg5GIA2,   // 128-5G-IA2 (AES-CMAC)
 		NgKSI:             0,
-		ReplayedUESecCap:  &nas.UESecurityCapability{EA0: true, EA1: true, EA2: true, IA0: true, IA1: true, IA2: true},
+		ReplayedUESecCap:  replayedCap,
 	})
-	smc := nas.WrapSecurityHeader(smcPlain, nas.SecurityHeaderIntegrityProtectedNewCtx, 0)
+
+	// Build integrity-protected NAS with real MAC (count=0, bearer=1, direction=1 for DL)
+	smc, err := buildSecurityProtectedNAS(ue.KNASint, smcPlain, nas.SecurityHeaderIntegrityProtectedNewCtx, 0, ue.DLCount)
+	if err != nil {
+		return nil, fmt.Errorf("build SMC with MAC: %w", err)
+	}
+	ue.DLCount++
 
 	dlNAS, err := ngapCodec.BuildDownlinkNASTransport(ue.AMFUeNgapID, ue.RANUeNgapID, smc)
 	if err != nil {
@@ -434,8 +469,12 @@ func (p *SCTPProxy) handleSecurityModeComplete(ue *UEContext, ngapCtx *ngapCodec
 			T3512Value:         nas.T3512Default,
 		})
 	}
-	regAcceptNAS := nas.WrapSecurityHeader(regAcceptPlain, nas.SecurityHeaderIntegrityProtectedCipheredNew, ue.DLSeqNum)
+	regAcceptNAS, err := buildSecurityProtectedNAS(ue.KNASint, regAcceptPlain, nas.SecurityHeaderIntegrityProtectedCipheredNew, ue.DLSeqNum, ue.DLCount)
+	if err != nil {
+		return nil, fmt.Errorf("build reg accept with MAC: %w", err)
+	}
 	ue.DLSeqNum++
+	ue.DLCount++
 
 	// Send via InitialContextSetupRequest (wraps Registration Accept)
 	icsr, err := ngapCodec.BuildInitialContextSetupRequest(
@@ -500,8 +539,12 @@ func (p *SCTPProxy) handlePDUSessionEstablishment(ue *UEContext, pduSessionID ui
 	// Build a minimal PDU Session Establishment Accept NAS, wrapped in DL NAS Transport
 	// For eval purposes, a simple accept with dummy IP is sufficient
 	pduAcceptPlain := buildPDUSessionAcceptNAS(pduSessionID)
-	pduAcceptNAS := nas.WrapSecurityHeader(pduAcceptPlain, nas.SecurityHeaderIntegrityProtectedCiphered, ue.DLSeqNum)
+	pduAcceptNAS, err := buildSecurityProtectedNAS(ue.KNASint, pduAcceptPlain, nas.SecurityHeaderIntegrityProtectedCiphered, ue.DLSeqNum, ue.DLCount)
+	if err != nil {
+		return nil, fmt.Errorf("build pdu accept with MAC: %w", err)
+	}
 	ue.DLSeqNum++
+	ue.DLCount++
 	dlNAS, err := ngapCodec.BuildDownlinkNASTransport(ue.AMFUeNgapID, ue.RANUeNgapID, pduAcceptNAS)
 	if err != nil {
 		return nil, fmt.Errorf("build downlink nas (pdu accept): %w", err)
@@ -510,6 +553,28 @@ func (p *SCTPProxy) handlePDUSessionEstablishment(ue *UEContext, pduSessionID ui
 	ue.State = UEStatePDUSessionActive
 	log.Printf("UE %s: PDU session %d established, state=%s", ue.SUPI, pduSessionID, ue.State)
 	return [][]byte{dlNAS}, nil
+}
+
+// buildSecurityProtectedNAS wraps a plain NAS message with a security header containing a real MAC.
+// Uses 128-EIA2 (AES-CMAC) for integrity protection. Bearer=1, direction=1 (DL) per TS 33.501.
+func buildSecurityProtectedNAS(knasInt []byte, plainNAS []byte, secHdrType byte, sqn byte, dlCount uint32) ([]byte, error) {
+	if len(knasInt) == 0 {
+		// Fallback to zero MAC if no integrity key available
+		return nas.WrapSecurityHeader(plainNAS, secHdrType, sqn), nil
+	}
+
+	mac, err := crypto.ComputeNASMAC(knasInt, dlCount, 0x01, 0x01, plainNAS)
+	if err != nil {
+		return nil, fmt.Errorf("compute NAS MAC: %w", err)
+	}
+
+	// Manually construct: EPD(1) + SecHdrType(1) + MAC(4) + SQN(1) + plainNAS
+	outer := make([]byte, 0, 7+len(plainNAS))
+	outer = append(outer, nas.EPD5GMM, secHdrType)
+	outer = append(outer, mac...)
+	outer = append(outer, sqn)
+	outer = append(outer, plainNAS...)
+	return outer, nil
 }
 
 // buildPDUSessionAcceptNAS builds a DL NAS Transport containing a PDU Session Establishment Accept.
