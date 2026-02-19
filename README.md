@@ -384,7 +384,7 @@ The custom cost exporter (`eval/scripts/cost-exporter/`) exposes projected Lambd
 
 ## Evaluation Results
 
-We completed 45 evaluation runs (3 targets x 5 scenarios x 3 runs each) on IONOS Cloud VMs (4 vCPU, 8 GB RAM, Debian 12). The three targets are:
+We completed 45 evaluation runs (3 targets x 5 scenarios x 3 runs each) on European IaaS cloud VMs (4 vCPU, 8 GB RAM, Debian 12). The three targets are:
 
 - **Serverless 5GC** (this project) -- OpenFaaS + K3s + Redis + etcd
 - **Open5GS v2.7.2** -- C-based monolithic 5G core (Docker Compose, 13 containers)

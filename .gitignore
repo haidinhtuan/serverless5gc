@@ -27,7 +27,7 @@ docs/
 
 # Cloud provisioning scripts (contains local paths and credentials)
 deploy/cloud/
-deploy/ionos/
+deploy/provider/
 
 # Temporary
 tmp/

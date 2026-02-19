@@ -382,7 +382,7 @@ Fig.~\ref{fig:nf-comparison} compares NF coverage across our serverless implemen
 
 \subsection{Experimental Setup}
 
-We deploy four system configurations on IONOS Cloud virtual machines in the Frankfurt (de/fra) region:
+We deploy four system configurations on virtual machines from a European IaaS provider in the Frankfurt (de/fra) region:
 
 \begin{enumerate}
     \item \textbf{Serverless (HTTP)}: Our Function-per-Procedure architecture with direct HTTP invocation of OpenFaaS functions on an 8-vCPU/16\,GB VM.
@@ -391,11 +391,11 @@ We deploy four system configurations on IONOS Cloud virtual machines in the Fran
     \item \textbf{free5GC}: Baseline deployment using Docker Compose with UERANSIM on a 4-vCPU/8\,GB VM.
 \end{enumerate}
 
-A separate 4-vCPU/8\,GB load generator VM hosts Prometheus (15-second scrape interval), node exporters, and the traffic generation scripts. Table~\ref{tab:infra-cost} lists the infrastructure costs based on IONOS Cloud pricing~\cite{ionos-pricing}.
+A separate 4-vCPU/8\,GB load generator VM hosts Prometheus (15-second scrape interval), node exporters, and the traffic generation scripts. Table~\ref{tab:infra-cost} lists the infrastructure costs based on the provider's published pricing~\cite{cloud-pricing}.
 
 \begin{table}[t]
 \centering
-\caption{Infrastructure Cost (IONOS Cloud, Frankfurt)}
+\caption{Infrastructure Cost (European IaaS, Frankfurt)}
 \label{tab:infra-cost}
 \small
 \begin{tabular}{@{}llrr@{}}
@@ -719,7 +719,7 @@ Table~\ref{tab:serverless-resources} presents the serverless system's resource c
 
 We analyze cost efficiency under two deployment models: (1)~the \textit{self-hosted} model using fixed-price cloud VMs, as in our testbed, and (2)~a \textit{hypothetical FaaS} model using commercial serverless pricing to project costs if the same architecture ran on a public FaaS platform.
 
-\subsubsection{Self-Hosted Model (IONOS Cloud)}
+\subsubsection{Self-Hosted Model}
 
 In the self-hosted model, VM costs are fixed regardless of utilization (Table~\ref{tab:infra-cost}). The serverless deployment requires a larger VM (\euro32.12/mo for 8~vCPU/16\,GB) to host K3s, OpenFaaS, Redis, and etcd, compared to the baseline deployments (\euro17.52/mo for 4~vCPU/8\,GB each). The cost comparison in this model depends on the measured resource utilization: during idle and low-traffic periods, unused capacity on the serverless VM could be reclaimed for co-located workloads, effectively amortizing the VM cost across multiple services.
 
@@ -833,8 +833,8 @@ M. S. Ali et al., ``Control Plane Performance Benchmarking and Feature Analysis 
 \bibitem{5gc-bench-2023}
 A. Mamushiane et al., ``Evaluating the Performance of Open Source Software Implementations of the 5G Network Core,'' in \textit{Proc. IEEE NOMS}, 2023.
 
-\bibitem{ionos-pricing}
-IONOS SE, ``Compute Engine Pricing,'' 2025. [Online]. Available: https://cloud.ionos.com/prices
+\bibitem{cloud-pricing}
+European IaaS Provider, ``Compute Engine Pricing,'' 2025. [Online]. Accessed: Feb. 2025.
 
 \bibitem{aws-lambda-pricing}
 Amazon Web Services, ``AWS Lambda Pricing,'' 2025. [Online]. Available: https://aws.amazon.com/lambda/pricing/
