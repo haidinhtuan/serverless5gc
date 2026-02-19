@@ -1,0 +1,9 @@
+\section{Conclusion}
+\label{sec:conclusion}
+
+We have presented a serverless 5G core network architecture based on Function-per-Procedure decomposition, implementing 31 serverless functions across 12 3GPP network functions---including Release~17 NFs for analytics (NWDAF), charging (CHF), slice admission control (NSACF), and PCF binding (BSF)---on open-source infrastructure (OpenFaaS, K3s, Redis, etcd). Our SCTP/NGAP proxy enables compatibility with standard radio access network equipment by bridging the N2 interface to HTTP-based function invocations.
+
+Our evaluation against Open5GS and free5GC demonstrates that the serverless architecture achieves comparable control plane latency to the C-based Open5GS baseline ($\sim$8\,ms median) while maintaining 100\% success rates across all load scenarios---matching the performance of monolithic deployments. Under the hypothetical FaaS pricing model, the serverless architecture reduces projected monthly costs by 85--90\% compared to always-on VM deployments, with idle-period costs dropping from \$142/month to \$13/month (managed Redis only). The Release~17 NFs are feature-gated, enabling evaluation of the cost impact of additional 5G core functionality.
+
+This work opens several directions for future investigation: optimizing cold-start latency through function pre-warming strategies, extending the architecture to support the user plane (UPF) for data path processing, and exploring edge deployment scenarios where the lightweight K3s footprint enables 5G core placement closer to the radio access network.
+
