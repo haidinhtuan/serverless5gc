@@ -164,7 +164,7 @@ def analyze_run(run_dir):
     avg_memory_bytes = extract_avg_value(mem_results)
 
     # Compute costs.
-    if target == "serverless":
+    if target.startswith("serverless"):
         cost = compute_serverless_cost(total_invocations, avg_duration)
         cost_model = "lambda"
     else:

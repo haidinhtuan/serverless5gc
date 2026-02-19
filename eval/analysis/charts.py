@@ -57,11 +57,14 @@ def plot_cost_comparison(df, output_dir):
     x = np.arange(len(SCENARIO_ORDER))
     width = 0.25
 
-    for i, target in enumerate(["serverless", "open5gs", "free5gc"]):
+    targets_to_plot = ["serverless", "serverless-sctp", "open5gs", "free5gc"]
+    for i, target in enumerate(targets_to_plot):
         if target in avg.columns:
+            # Use 'serverless' color/label for both variants
+            lookup_key = "serverless" if target.startswith("serverless") else target
             values = avg[target].values
             ax.bar(x + i * width, values, width,
-                   label=LABELS[target], color=COLORS[target], edgecolor="white")
+                   label=LABELS[lookup_key], color=COLORS[lookup_key], edgecolor="white")
 
     ax.set_xlabel("Scenario")
     ax.set_ylabel("Projected Cost (USD)")
@@ -80,11 +83,16 @@ def plot_cost_crossover(df, output_dir):
     """Line chart: cost vs UE count, showing crossover point."""
     fig, ax = plt.subplots()
 
-    for target in ["serverless", "open5gs", "free5gc"]:
+    all_targets = df["target"].unique()
+    for target in all_targets:
+        lookup_key = "serverless" if target.startswith("serverless") else target
+        if lookup_key not in COLORS: continue
+        
         subset = df[df["target"] == target]
         avg = subset.groupby("ue_count")["projected_cost_usd"].mean().sort_index()
         ax.plot(avg.index, avg.values, "o-",
-                label=LABELS[target], color=COLORS[target], linewidth=2, markersize=6)
+                label=f"{LABELS[lookup_key]} ({target})" if target != lookup_key else LABELS[lookup_key],
+                color=COLORS[lookup_key], linewidth=2, markersize=6)
 
     ax.set_xlabel("Number of UEs")
     ax.set_ylabel("Projected Cost (USD)")

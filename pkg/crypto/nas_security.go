@@ -9,12 +9,27 @@ import (
 	"github.com/free5gc/util/ueauth"
 )
 
-// DeriveKAMF derives KAMF from KAUSF per TS 33.501 Annex A.7.
+// DeriveKSEAF derives KSEAF from KAUSF per TS 33.501 Annex A.6.
+// FC = 0x6C, P0 = serving network name (as bytes), L0 = len(SNN).
+func DeriveKSEAF(kausf []byte, snn string) ([]byte, error) {
+	snnBytes := []byte(snn)
+	kseaf, err := ueauth.GetKDFValue(
+		kausf,
+		ueauth.FC_FOR_KSEAF_DERIVATION,
+		snnBytes, ueauth.KDFLen(snnBytes),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("derive KSEAF: %w", err)
+	}
+	return kseaf, nil
+}
+
+// DeriveKAMF derives KAMF from KSEAF per TS 33.501 Annex A.7.
 // FC = 0x6D, P0 = SUPI (as bytes), L0 = len(SUPI), P1 = ABBA, L1 = len(ABBA).
-func DeriveKAMF(kausf []byte, supi string, abba []byte) ([]byte, error) {
+func DeriveKAMF(kseaf []byte, supi string, abba []byte) ([]byte, error) {
 	supiBytes := []byte(supi)
 	kamf, err := ueauth.GetKDFValue(
-		kausf,
+		kseaf,
 		ueauth.FC_FOR_KAMF_DERIVATION,
 		supiBytes, ueauth.KDFLen(supiBytes),
 		abba, ueauth.KDFLen(abba),

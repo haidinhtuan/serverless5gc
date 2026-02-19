@@ -1,6 +1,6 @@
 .PHONY: test test-unit test-integration build lint clean
 
-MODULE := github.com/tdinh/serverless5gc
+MODULE := github.com/haidinhtuan/serverless5gc
 
 test-unit:
 	go test ./... -v -count=1

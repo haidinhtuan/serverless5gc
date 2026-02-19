@@ -141,19 +141,21 @@ func DecodeRegistrationRequest(data []byte) (*RegistrationRequest, error) {
 
 // EncodeRegistrationAccept builds a NAS Registration Accept wire message.
 func EncodeRegistrationAccept(accept *RegistrationAccept) []byte {
-	// Header
+	// Header: EPD + SecHdr + MsgType + 5GS Registration Result (LV: length=1 + value)
 	msg := []byte{
 		EPD5GMM,
 		SecurityHeaderPlain,
 		MsgTypeRegistrationAccept,
-		accept.RegistrationResult,
+		0x01,                      // 5GS registration result length
+		accept.RegistrationResult, // 5GS registration result value
 	}
 
-	// 5G-GUTI (optional IE, tag 0x77)
+	// 5G-GUTI (optional IE, tag 0x77, TLV-E format: IEI + 2-byte length + value)
 	if accept.GUTI != "" {
 		gutiBytes := encodeGUTIValue(accept.GUTI)
+		gutiLen := len(gutiBytes)
 		msg = append(msg, IETag5GGUTI)
-		msg = append(msg, byte(len(gutiBytes)))
+		msg = append(msg, byte(gutiLen>>8), byte(gutiLen))
 		msg = append(msg, gutiBytes...)
 	}
 
@@ -639,10 +641,22 @@ func decodeDNN(data []byte) string {
 }
 
 func encodeGUTIValue(guti string) []byte {
-	// Simplified: return GUTI as raw bytes with type prefix
-	out := []byte{MobileIdentity5GGUTI}
-	out = append(out, []byte(guti)...)
-	return out
+	// Encode 5G-GUTI per TS 24.501 Section 9.11.3.4:
+	// Octet 1: spare(4 bits) | type(4 bits=0xF2 for 5G-GUTI: 1111 | 0010)
+	// Octet 2-3: MCC digit2|MCC digit1 | MNC digit3|MCC digit3
+	//            MNC digit2|MNC digit1
+	// Octet 4: AMF Region ID
+	// Octet 5-6: AMF Set ID (10 bits) | AMF Pointer (6 bits)
+	// Octet 7-10: 5G-TMSI (4 bytes)
+	// Use fixed values for PLMN 001/01, AMF region=0x01, set=0x01, pointer=0x00
+	return []byte{
+		0xF2,       // spare(1111) | identity type(0010 = 5G-GUTI)
+		0x00, 0xF1, // MCC=001: d2(0)|d1(0), MNC d3(F)|MCC d3(1)
+		0x10,       // MNC=01: d2(1)|d1(0)
+		0x01,       // AMF Region ID
+		0x00, 0x40, // AMF Set ID=1 (10 bits) | AMF Pointer=0 (6 bits)
+		0x00, 0x00, 0x00, 0x01, // 5G-TMSI = 1
+	}
 }
 
 // encodeGPRSTimer3 encodes a duration (seconds) into GPRS Timer 3 format

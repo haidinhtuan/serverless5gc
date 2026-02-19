@@ -1,0 +1,47 @@
+\documentclass[conference]{IEEEtran}
+
+\usepackage{cite}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{graphicx}
+\usepackage{textcomp}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{url}
+\usepackage{balance}
+\usepackage{subcaption}
+\usepackage{tikz}
+\usetikzlibrary{positioning, arrows.meta, fit, backgrounds, calc, shapes.geometric, patterns, decorations.pathreplacing}
+
+\definecolor{nfblue}{HTML}{4472C4}
+\definecolor{nforange}{HTML}{ED7D31}
+\definecolor{nfgreen}{HTML}{70AD47}
+\definecolor{nfpurple}{HTML}{7030A0}
+\definecolor{nfgray}{HTML}{A5A5A5}
+\definecolor{r17red}{HTML}{C00000}
+
+\begin{document}
+
+\title{Serverless 5G Core Network: A Function-per-Procedure Architecture for Cost-Efficient Deployment}
+
+\author{\IEEEauthorblockN{Hai Dinh-Tuan}
+\IEEEauthorblockA{Technische Universit\"{a}t Berlin\\
+Berlin, Germany\\
+hai.dinhtuan@tu-berlin.de}}
+
+\maketitle
+
+\begin{abstract}
+The deployment of 5G core networks requires significant computational resources, even when serving low or variable traffic loads. We present a serverless 5G core network architecture that decomposes standard 3GPP network functions into fine-grained serverless functions following a Function-per-Procedure model. Our implementation maps 31 individual procedures across 12 network functions---including Release~17 additions for analytics, charging, slice admission control, and PCF binding---to OpenFaaS functions orchestrated on a lightweight Kubernetes (K3s) cluster, with Redis and etcd providing stateful context and service discovery. To maintain compatibility with standard 3GPP interfaces, we introduce an SCTP/NGAP proxy that bridges the N2 interface between radio access network simulators and the serverless backend. We evaluate our system against two established open-source 5G core implementations---Open5GS and free5GC---across five traffic scenarios ranging from idle to burst conditions. Our results demonstrate that the serverless architecture achieves significant cost reductions during low-traffic periods through automatic scale-to-zero, while maintaining acceptable control plane latency for registration and session establishment procedures.
+\end{abstract}
+
+\begin{IEEEkeywords}
+5G core network, serverless computing, Function-as-a-Service, network function virtualization, cloud-native
+\end{IEEEkeywords}
+
+\input{sections/introduction}
+\input{sections/background}
+\input{sections/architecture}
+\input{sections/evaluation}
+\input{sections/conclusion}
+\input{sections/references}

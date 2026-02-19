@@ -8,63 +8,63 @@ import (
 	"os"
 
 	handler "github.com/openfaas/templates-sdk/go-http"
-	"github.com/tdinh/serverless5gc/pkg/sbi"
-	"github.com/tdinh/serverless5gc/pkg/state"
+	"github.com/haidinhtuan/serverless5gc/pkg/sbi"
+	"github.com/haidinhtuan/serverless5gc/pkg/state"
 
 	// NRF functions (etcd-backed)
-	nrfRegister     "github.com/tdinh/serverless5gc/functions/nrf/register"
-	nrfDiscover     "github.com/tdinh/serverless5gc/functions/nrf/discover"
-	nrfStatusNotify "github.com/tdinh/serverless5gc/functions/nrf/status-notify"
+	nrfRegister     "github.com/haidinhtuan/serverless5gc/functions/nrf/register"
+	nrfDiscover     "github.com/haidinhtuan/serverless5gc/functions/nrf/discover"
+	nrfStatusNotify "github.com/haidinhtuan/serverless5gc/functions/nrf/status-notify"
 
 	// AMF functions (redis-backed)
-	amfRegistration   "github.com/tdinh/serverless5gc/functions/amf/registration"
-	amfDeregistration "github.com/tdinh/serverless5gc/functions/amf/deregistration"
-	amfServiceRequest "github.com/tdinh/serverless5gc/functions/amf/service-request"
-	amfPduSessionRelay "github.com/tdinh/serverless5gc/functions/amf/pdu-session-relay"
-	amfHandover        "github.com/tdinh/serverless5gc/functions/amf/handover"
-	amfAuthInitiate   "github.com/tdinh/serverless5gc/functions/amf/auth-initiate"
+	amfRegistration   "github.com/haidinhtuan/serverless5gc/functions/amf/registration"
+	amfDeregistration "github.com/haidinhtuan/serverless5gc/functions/amf/deregistration"
+	amfServiceRequest "github.com/haidinhtuan/serverless5gc/functions/amf/service-request"
+	amfPduSessionRelay "github.com/haidinhtuan/serverless5gc/functions/amf/pdu-session-relay"
+	amfHandover        "github.com/haidinhtuan/serverless5gc/functions/amf/handover"
+	amfAuthInitiate   "github.com/haidinhtuan/serverless5gc/functions/amf/auth-initiate"
 
 	// SMF functions (redis-backed)
-	smfPduSessionCreate  "github.com/tdinh/serverless5gc/functions/smf/pdu-session-create"
-	smfPduSessionUpdate  "github.com/tdinh/serverless5gc/functions/smf/pdu-session-update"
-	smfPduSessionRelease "github.com/tdinh/serverless5gc/functions/smf/pdu-session-release"
-	smfN4SessionSetup    "github.com/tdinh/serverless5gc/functions/smf/n4-session-setup"
+	smfPduSessionCreate  "github.com/haidinhtuan/serverless5gc/functions/smf/pdu-session-create"
+	smfPduSessionUpdate  "github.com/haidinhtuan/serverless5gc/functions/smf/pdu-session-update"
+	smfPduSessionRelease "github.com/haidinhtuan/serverless5gc/functions/smf/pdu-session-release"
+	smfN4SessionSetup    "github.com/haidinhtuan/serverless5gc/functions/smf/n4-session-setup"
 
 	// UDM functions (redis-backed)
-	udmGenerateAuthData  "github.com/tdinh/serverless5gc/functions/udm/generate-auth-data"
-	udmGetSubscriberData "github.com/tdinh/serverless5gc/functions/udm/get-subscriber-data"
+	udmGenerateAuthData  "github.com/haidinhtuan/serverless5gc/functions/udm/generate-auth-data"
+	udmGetSubscriberData "github.com/haidinhtuan/serverless5gc/functions/udm/get-subscriber-data"
 
 	// UDR functions (redis-backed)
-	udrDataRead  "github.com/tdinh/serverless5gc/functions/udr/data-read"
-	udrDataWrite "github.com/tdinh/serverless5gc/functions/udr/data-write"
+	udrDataRead  "github.com/haidinhtuan/serverless5gc/functions/udr/data-read"
+	udrDataWrite "github.com/haidinhtuan/serverless5gc/functions/udr/data-write"
 
 	// AUSF functions (redis-backed)
-	ausfAuthenticate "github.com/tdinh/serverless5gc/functions/ausf/authenticate"
+	ausfAuthenticate "github.com/haidinhtuan/serverless5gc/functions/ausf/authenticate"
 
 	// PCF functions (redis-backed)
-	pcfPolicyCreate "github.com/tdinh/serverless5gc/functions/pcf/policy-create"
-	pcfPolicyGet    "github.com/tdinh/serverless5gc/functions/pcf/policy-get"
+	pcfPolicyCreate "github.com/haidinhtuan/serverless5gc/functions/pcf/policy-create"
+	pcfPolicyGet    "github.com/haidinhtuan/serverless5gc/functions/pcf/policy-get"
 
 	// NSSF functions (redis-backed)
-	nssfSliceSelect "github.com/tdinh/serverless5gc/functions/nssf/slice-select"
+	nssfSliceSelect "github.com/haidinhtuan/serverless5gc/functions/nssf/slice-select"
 
 	// NWDAF functions (redis-backed, R17)
-	nwdafAnalyticsSubscribe "github.com/tdinh/serverless5gc/functions/nwdaf/analytics-subscribe"
-	nwdafDataCollect        "github.com/tdinh/serverless5gc/functions/nwdaf/data-collect"
+	nwdafAnalyticsSubscribe "github.com/haidinhtuan/serverless5gc/functions/nwdaf/analytics-subscribe"
+	nwdafDataCollect        "github.com/haidinhtuan/serverless5gc/functions/nwdaf/data-collect"
 
 	// CHF functions (redis-backed, R17)
-	chfChargingCreate  "github.com/tdinh/serverless5gc/functions/chf/charging-create"
-	chfChargingUpdate  "github.com/tdinh/serverless5gc/functions/chf/charging-update"
-	chfChargingRelease "github.com/tdinh/serverless5gc/functions/chf/charging-release"
+	chfChargingCreate  "github.com/haidinhtuan/serverless5gc/functions/chf/charging-create"
+	chfChargingUpdate  "github.com/haidinhtuan/serverless5gc/functions/chf/charging-update"
+	chfChargingRelease "github.com/haidinhtuan/serverless5gc/functions/chf/charging-release"
 
 	// NSACF functions (redis-backed, R17)
-	nsacfSliceAvailabilityCheck "github.com/tdinh/serverless5gc/functions/nsacf/slice-availability-check"
-	nsacfUpdateCounters         "github.com/tdinh/serverless5gc/functions/nsacf/update-counters"
+	nsacfSliceAvailabilityCheck "github.com/haidinhtuan/serverless5gc/functions/nsacf/slice-availability-check"
+	nsacfUpdateCounters         "github.com/haidinhtuan/serverless5gc/functions/nsacf/update-counters"
 
 	// BSF functions (redis-backed, R17)
-	bsfBindingRegister   "github.com/tdinh/serverless5gc/functions/bsf/binding-register"
-	bsfBindingDiscover   "github.com/tdinh/serverless5gc/functions/bsf/binding-discover"
-	bsfBindingDeregister "github.com/tdinh/serverless5gc/functions/bsf/binding-deregister"
+	bsfBindingRegister   "github.com/haidinhtuan/serverless5gc/functions/bsf/binding-register"
+	bsfBindingDiscover   "github.com/haidinhtuan/serverless5gc/functions/bsf/binding-discover"
+	bsfBindingDeregister "github.com/haidinhtuan/serverless5gc/functions/bsf/binding-deregister"
 )
 
 // wrapHandler converts an OpenFaaS function handler into a standard http.HandlerFunc.

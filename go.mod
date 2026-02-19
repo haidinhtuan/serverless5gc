@@ -1,9 +1,12 @@
-module github.com/tdinh/serverless5gc
+module github.com/haidinhtuan/serverless5gc
 
 go 1.25.5
 
 require (
 	github.com/alicebob/miniredis/v2 v2.36.1
+	github.com/free5gc/aper v1.1.0
+	github.com/free5gc/nas v1.2.2
+	github.com/free5gc/ngap v1.1.2
 	github.com/free5gc/util v1.3.1
 	github.com/ishidawataru/sctp v0.0.0-20251114114122-19ddcbc6aae2
 	github.com/openfaas/templates-sdk/go-http v0.0.0-20220408082716-5981c545cb03
@@ -14,14 +17,12 @@ require (
 )
 
 require (
+	github.com/aead/cmac v0.0.0-20160719120800-7af84192f0b1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/coreos/go-semver v0.3.1 // indirect
 	github.com/coreos/go-systemd/v22 v22.5.0 // indirect
 	github.com/dgryski/go-rendezvous v0.0.0-20200823014737-9f7001d12a5f // indirect
-	github.com/free5gc/aper v1.1.0 // indirect
-	github.com/free5gc/nas v1.2.2 // indirect
-	github.com/free5gc/ngap v1.1.2 // indirect
 	github.com/gogo/protobuf v1.3.2 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.26.3 // indirect

@@ -23,12 +23,12 @@ import (
 	"time"
 
 	handler "github.com/openfaas/templates-sdk/go-http"
-	"github.com/tdinh/serverless5gc/pkg/crypto"
-	"github.com/tdinh/serverless5gc/pkg/models"
-	"github.com/tdinh/serverless5gc/pkg/nas"
-	"github.com/tdinh/serverless5gc/pkg/sbi"
-	"github.com/tdinh/serverless5gc/pkg/state"
-	"github.com/tdinh/serverless5gc/pkg/statemachine"
+	"github.com/haidinhtuan/serverless5gc/pkg/crypto"
+	"github.com/haidinhtuan/serverless5gc/pkg/models"
+	"github.com/haidinhtuan/serverless5gc/pkg/nas"
+	"github.com/haidinhtuan/serverless5gc/pkg/sbi"
+	"github.com/haidinhtuan/serverless5gc/pkg/state"
+	"github.com/haidinhtuan/serverless5gc/pkg/statemachine"
 )
 
 // SBICaller abstracts inter-NF communication for testability.

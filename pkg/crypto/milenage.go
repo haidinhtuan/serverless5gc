@@ -80,30 +80,16 @@ func deriveXRESStar(ck, ik []byte, snn string, randVal, res []byte) ([]byte, err
 	return kdfVal[len(kdfVal)-16:], nil
 }
 
-// deriveKAUSF derives KAUSF from CK, IK, serving network name, SQN, and AUTN.
-// Per TS 33.501 Annex A.2:
-// 1. Derive CK'||IK' = KDF(CK||IK, FC=0x20, P0=SNN, P1=SQN⊕AK)
-// 2. KAUSF = KDF(CK'||IK', FC=0x6A, P0=SNN, P1=SQN⊕AK)
+// deriveKAUSF derives KAUSF from CK, IK, serving network name, and AUTN.
+// Per TS 33.501 Annex A.2 (5G-AKA):
+// KAUSF = KDF(CK||IK, FC=0x6A, P0=SNN, P1=SQN⊕AK)
 func deriveKAUSF(ck, ik []byte, snn string, sqn, autn []byte) ([]byte, error) {
-	// Extract SQN⊕AK from AUTN (first 6 bytes)
 	sqnXorAK := autn[:6]
 	snnBytes := []byte(snn)
 
-	// Step 1: Derive CK'||IK'
 	key := append(ck, ik...)
-	ckikPrime, err := ueauth.GetKDFValue(
-		key,
-		ueauth.FC_FOR_CK_PRIME_IK_PRIME_DERIVATION,
-		snnBytes, ueauth.KDFLen(snnBytes),
-		sqnXorAK, ueauth.KDFLen(sqnXorAK),
-	)
-	if err != nil {
-		return nil, fmt.Errorf("derive CK'||IK': %w", err)
-	}
-
-	// Step 2: Derive KAUSF
 	kausf, err := ueauth.GetKDFValue(
-		ckikPrime,
+		key,
 		ueauth.FC_FOR_KAUSF_DERIVATION,
 		snnBytes, ueauth.KDFLen(snnBytes),
 		sqnXorAK, ueauth.KDFLen(sqnXorAK),

@@ -10,8 +10,8 @@ import (
 	"os"
 
 	handler "github.com/openfaas/templates-sdk/go-http"
-	"github.com/tdinh/serverless5gc/pkg/pfcp"
-	"github.com/tdinh/serverless5gc/pkg/state"
+	"github.com/haidinhtuan/serverless5gc/pkg/pfcp"
+	"github.com/haidinhtuan/serverless5gc/pkg/state"
 )
 
 // PFCPEstablisher abstracts PFCP session establishment for testability.

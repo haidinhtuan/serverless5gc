@@ -10,7 +10,7 @@ import (
 	"testing"
 
 	handler "github.com/openfaas/templates-sdk/go-http"
-	"github.com/tdinh/serverless5gc/pkg/models"
+	"github.com/haidinhtuan/serverless5gc/pkg/models"
 )
 
 // mockNRFStore is an in-memory NRFStore for testing.

@@ -8,9 +8,9 @@ import (
 	"time"
 
 	handler "github.com/openfaas/templates-sdk/go-http"
-	"github.com/tdinh/serverless5gc/pkg/models"
-	"github.com/tdinh/serverless5gc/pkg/pfcp"
-	"github.com/tdinh/serverless5gc/pkg/state"
+	"github.com/haidinhtuan/serverless5gc/pkg/models"
+	"github.com/haidinhtuan/serverless5gc/pkg/pfcp"
+	"github.com/haidinhtuan/serverless5gc/pkg/state"
 )
 
 type mockPFCP struct {

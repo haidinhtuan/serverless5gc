@@ -1,0 +1,298 @@
+\section{System Architecture}
+\label{sec:architecture}
+
+\subsection{Function-per-Procedure Design}
+
+Our architecture decomposes the 5G core into individual serverless functions, each implementing a single 3GPP procedure as defined in TS~23.502~\cite{3gpp-23502}. Table~\ref{tab:functions} lists the complete mapping of functions to NFs and procedures. Each function is implemented in Go using the OpenFaaS \texttt{go-http} template, exposing a single \texttt{Handle()} entry point that receives an HTTP request and returns a response.
+
+\begin{table}[t]
+\centering
+\caption{Function-per-Procedure Decomposition}
+\label{tab:functions}
+\small
+\begin{tabular}{@{}llc@{}}
+\toprule
+\textbf{NF} & \textbf{Procedure} & \textbf{Count} \\
+\midrule
+AMF & Registration, Deregistration, Service Request, & \multirow{2}{*}{6} \\
+    & PDU Session Relay, Handover, Auth Initiate & \\
+\midrule
+SMF & PDU Create, Update, Release, N4 Setup & 4 \\
+\midrule
+NRF & Register, Discover, Status Notify & 3 \\
+\midrule
+CHF\textsuperscript{\dag} & Charging Create, Update, Release & 3 \\
+\midrule
+BSF\textsuperscript{\dag} & Binding Register, Discover, Deregister & 3 \\
+\midrule
+UDM & Generate Auth Data, Get Subscriber Data & 2 \\
+\midrule
+UDR & Data Read, Data Write & 2 \\
+\midrule
+PCF & Policy Create, Policy Get & 2 \\
+\midrule
+NWDAF\textsuperscript{\dag} & Analytics Subscribe, Data Collect & 2 \\
+\midrule
+NSACF\textsuperscript{\dag} & Slice Availability Check, Update Counters & 2 \\
+\midrule
+AUSF & Authenticate & 1 \\
+\midrule
+NSSF & Slice Select & 1 \\
+\midrule
+\multicolumn{2}{l}{\textbf{Total}} & \textbf{31} \\
+\bottomrule
+\multicolumn{3}{l}{\scriptsize \textsuperscript{\dag}Release~17 NF (feature-gated)}
+\end{tabular}
+\end{table}
+
+The Release~17 NFs (NWDAF, CHF, NSACF, BSF) are feature-gated via environment variables (\texttt{ENABLE\_NSACF}, \texttt{ENABLE\_CHARGING}, \texttt{ENABLE\_BSF}), enabling evaluation with and without R17 overhead. These NFs are particularly well-suited to serverless deployment: NWDAF analytics collection is event-driven, CHF charging follows a create/update/release lifecycle tied to PDU sessions, NSACF admission checks are stateless lookups, and BSF binding operations are simple CRUD.
+
+Inter-function communication follows the SBI pattern defined by 3GPP, with functions invoking each other through the OpenFaaS gateway using HTTP. For example, during UE registration, the AMF registration function calls the AUSF authenticate function, which in turn calls the UDM generate-auth-data function. When R17 features are enabled, the AMF additionally calls the NSACF for slice admission control, and the SMF calls the CHF and BSF during PDU session establishment. The OpenFaaS gateway routes these calls to available function replicas, creating new instances as needed.
+
+\subsection{State Management}
+
+Serverless functions are inherently stateless, but 5G core procedures require persistent state---UE context, session data, and authentication vectors must survive across function invocations. We employ a dual-store architecture:
+
+\begin{itemize}
+    \item \textbf{Redis}: Stores UE context (registration state, security context), PDU session data, authentication vectors, charging sessions, slice admission counters, PCF bindings, and analytics metrics. Keys follow the pattern \texttt{ue:\{supi\}}, \texttt{pdu:\{session-id\}}, \texttt{charging-sessions/\{id\}}, \texttt{nsacf-counters/\{sst\}-\{sd\}}, and \texttt{bsf-bindings/\{id\}}.
+    \item \textbf{etcd}: Serves as the NRF service registry, storing NF instance profiles and enabling service discovery through key-prefix queries.
+\end{itemize}
+
+All functions access state through a common \texttt{KVStore} interface, abstracting the underlying store and enabling mock injection for testing.
+
+\subsection{SCTP/NGAP Proxy}
+
+The N2 interface between the gNB (radio access) and the AMF uses SCTP transport with NGAP (NG Application Protocol) encoding, as specified in TS~38.413~\cite{3gpp-38413}. Since serverless functions are invoked via HTTP, a protocol translation layer is required.
+
+\begin{figure*}[t]
+\centering
+\begin{tikzpicture}[
+    node distance=0.6cm and 0.8cm,
+    box/.style={draw, rounded corners=3pt, minimum height=0.8cm, minimum width=2.2cm, font=\small, align=center, thick},
+    funcbox/.style={draw, rounded corners=2pt, minimum height=0.5cm, minimum width=1.8cm, font=\scriptsize, align=center, fill=white},
+    arrow/.style={-{Stealth[length=5pt]}, thick},
+    label/.style={font=\scriptsize, text=gray},
+]
+
+% RAN side
+\node[box, fill=nfblue!15] (ueransim) {UERANSIM\\[-1pt]\scriptsize gNB + UE};
+
+% SCTP Proxy
+\node[box, fill=nforange!15, right=1.2cm of ueransim] (proxy) {SCTP/NGAP\\[-1pt]\scriptsize Proxy};
+
+% OpenFaaS Gateway
+\node[box, fill=nfgreen!15, right=1.2cm of proxy] (gw) {OpenFaaS\\[-1pt]\scriptsize Gateway};
+
+% Function groups - R15 core
+\node[box, fill=nfblue!8, right=1.2cm of gw, minimum width=2.8cm, minimum height=2.8cm] (r15pool) {};
+\node[above=0pt of r15pool.north, font=\scriptsize\bfseries] {R15 Core (21 fn)};
+\node[funcbox, fill=nfblue!15] at ([yshift=0.6cm]r15pool.center) (amf) {AMF (6)};
+\node[funcbox, fill=nfblue!15, below=0.15cm of amf] (smf) {SMF (4)};
+\node[funcbox, fill=nfblue!15, below=0.15cm of smf] (rest) {NRF, UDM, UDR,};
+\node[font=\scriptsize, below=-0.05cm of rest] {AUSF, PCF, NSSF (11)};
+
+% R17 functions
+\node[box, fill=r17red!8, right=0.4cm of r15pool, minimum width=2.4cm, minimum height=2.8cm] (r17pool) {};
+\node[above=0pt of r17pool.north, font=\scriptsize\bfseries, text=r17red] {R17 (10 fn)};
+\node[funcbox, fill=r17red!12] at ([yshift=0.6cm]r17pool.center) (chf) {CHF (3)};
+\node[funcbox, fill=r17red!12, below=0.15cm of chf] (bsf) {BSF (3)};
+\node[funcbox, fill=r17red!12, below=0.15cm of bsf] (nsacf) {NSACF (2)};
+\node[funcbox, fill=r17red!12, below=0.15cm of nsacf] (nwdaf) {NWDAF (2)};
+
+% State stores
+\node[box, fill=nfpurple!12, below=1.5cm of gw] (redis) {Redis\\[-1pt]\scriptsize UE/Session State};
+\node[box, fill=nfpurple!12, right=0.6cm of redis] (etcd) {etcd\\[-1pt]\scriptsize NRF Registry};
+
+% UPF
+\node[box, fill=nfgray!20, right=0.6cm of etcd] (upf) {UPF\\[-1pt]\scriptsize Data Plane};
+
+% Arrows
+\draw[arrow] (ueransim) -- node[above, label] {SCTP} (proxy);
+\draw[arrow] (proxy) -- node[above, label] {HTTP} (gw);
+\draw[arrow] (gw) -- node[above, label] {HTTP} (r15pool.west);
+\draw[arrow, dashed, r17red] (gw.east) ++(0,-0.3) -| ([xshift=-0.1cm]r17pool.south west) -- (r17pool.south west);
+
+% State arrows
+\draw[arrow, nfpurple] ([xshift=-0.3cm]r15pool.south) |- (redis);
+\draw[arrow, nfpurple] ([xshift=0.3cm]r15pool.south) |- (etcd);
+\draw[arrow, nfpurple, dashed, r17red] (r17pool.south) |- ([yshift=0.1cm]redis.east);
+\draw[arrow, nfgray] (smf.south) ++(0,-0.35) -| (upf.north) node[pos=0.25, above, label] {PFCP (N4)};
+
+% Protocol labels
+\node[label, above=0.05cm of ueransim.north east, anchor=south west] {N2 (TS 38.412)};
+
+% K3s boundary
+\begin{scope}[on background layer]
+\node[draw=nfgray, dashed, thick, rounded corners=5pt, fit=(proxy)(gw)(r15pool)(r17pool)(redis)(etcd)(upf), inner sep=10pt, label={[font=\scriptsize, text=nfgray]above right:K3s Cluster}] {};
+\end{scope}
+
+\end{tikzpicture}
+\caption{Serverless 5GC architecture. The SCTP/NGAP proxy bridges the N2 interface to HTTP-based function invocations. R15 core functions (21) handle standard procedures; R17 functions (10, dashed) add analytics, charging, admission control, and PCF binding. All functions share Redis for state and etcd for NRF service discovery.}
+\label{fig:architecture}
+\end{figure*}
+
+Our SCTP proxy (Fig.~\ref{fig:architecture}) performs the following functions:
+\begin{enumerate}
+    \item \textbf{Protocol translation}: Accepts SCTP connections from gNBs and decodes NGAP messages using the free5GC NGAP codec~\cite{free5gc-ngap}.
+    \item \textbf{NAS extraction}: Extracts NAS (Non-Access Stratum) messages from NGAP containers and decodes them per TS~24.501~\cite{3gpp-24501}.
+    \item \textbf{UE state tracking}: Maintains per-UE state machines to track the signaling flow (registration, authentication, security mode, session establishment) and sequence NAS security headers.
+    \item \textbf{Response synthesis}: Converts HTTP/JSON responses from serverless functions back into NGAP/NAS messages with appropriate security protection.
+\end{enumerate}
+
+The proxy maintains a \texttt{CoreBackend} interface, currently implemented as an \texttt{HTTPBackend} that routes procedure calls to the appropriate OpenFaaS functions. This design allows future backends (e.g., for alternative transport protocols) without modifying the proxy's NGAP handling logic.
+
+\subsection{Deployment Infrastructure}
+
+The system deploys on a single-node K3s cluster with the following components:
+\begin{itemize}
+    \item \textbf{OpenFaaS}: Manages function lifecycle, scaling, and routing. Functions scale from zero replicas when idle to multiple replicas under load, with configurable scale-up/down thresholds.
+    \item \textbf{Redis}: Deployed as a single-replica pod with persistent volume for durability. Configured with 256\,MB memory limit and LRU eviction.
+    \item \textbf{etcd}: Single-node deployment for NRF service registry.
+    \item \textbf{SCTP Proxy}: Deployed as a Kubernetes pod listening on the standard NGAP port (38412).
+\end{itemize}
+
+Each function is packaged as a Docker container using a multi-stage build: Go compilation produces a static binary, which runs on Alpine Linux with the OpenFaaS watchdog process managing HTTP serving and health checks.
+
+\subsection{Registration Procedure Flow}
+
+Fig.~\ref{fig:regflow} illustrates the inter-function call chain for the UE Initial Registration procedure (TS~23.502 Section 4.2.2.2), the most complex signaling flow in the system. The dashed R17 calls (NSACF) are executed only when the corresponding feature flags are enabled.
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+    participant/.style={draw, thick, rounded corners=2pt, minimum width=1.1cm, minimum height=0.55cm, font=\scriptsize\bfseries, fill=#1!12},
+    participant/.default=nfblue,
+    msg/.style={-{Stealth[length=4pt]}, thick, font=\scriptsize},
+    rmsg/.style={-{Stealth[length=4pt]}, thick, dashed, font=\scriptsize},
+    timeline/.style={thick, gray!50},
+    note/.style={font=\tiny, text=gray},
+]
+
+% Participants
+\node[participant=nforange] (proxy) at (0,0) {Proxy};
+\node[participant] (amf) at (1.6,0) {AMF};
+\node[participant] (ausf) at (3.2,0) {AUSF};
+\node[participant] (udm) at (4.8,0) {UDM};
+\node[participant=r17red] (nsacf) at (6.4,0) {NSACF};
+
+% Timelines
+\foreach \n in {proxy,amf,ausf,udm,nsacf} {
+    \draw[timeline] (\n.south) -- ++(0,-5.8);
+}
+
+% Messages
+\def\ystart{-0.5}
+\def\ystep{0.55}
+
+% 1. Registration Request
+\draw[msg] ([yshift=\ystart cm]proxy.south) -- node[above] {\tiny Reg Request} ([yshift=\ystart cm]amf.south);
+
+% 2. Auth Initiate
+\pgfmathsetmacro{\y}{\ystart - \ystep}
+\draw[msg] ([yshift=\y cm]amf.south) -- node[above] {\tiny Auth Initiate} ([yshift=\y cm]ausf.south);
+
+% 3. AUSF -> UDM
+\pgfmathsetmacro{\y}{\ystart - 2*\ystep}
+\draw[msg] ([yshift=\y cm]ausf.south) -- node[above] {\tiny Gen Auth Data} ([yshift=\y cm]udm.south);
+
+% 4. UDM -> AUSF (response)
+\pgfmathsetmacro{\y}{\ystart - 3*\ystep}
+\draw[rmsg] ([yshift=\y cm]udm.south) -- node[above] {\tiny AV} ([yshift=\y cm]ausf.south);
+
+% 5. AUSF -> AMF (challenge)
+\pgfmathsetmacro{\y}{\ystart - 4*\ystep}
+\draw[rmsg] ([yshift=\y cm]ausf.south) -- node[above] {\tiny Challenge} ([yshift=\y cm]amf.south);
+
+% 6. AMF -> AUSF (verify)
+\pgfmathsetmacro{\y}{\ystart - 5*\ystep}
+\draw[msg] ([yshift=\y cm]amf.south) -- node[above] {\tiny Verify RES*} ([yshift=\y cm]ausf.south);
+
+% 7. AMF -> UDM (subscriber data)
+\pgfmathsetmacro{\y}{\ystart - 6*\ystep}
+\draw[msg] ([yshift=\y cm]amf.south) -- node[above] {\tiny Get Sub Data} ([yshift=\y cm]udm.south);
+
+% 8. UDM -> AMF (response)
+\pgfmathsetmacro{\y}{\ystart - 7*\ystep}
+\draw[rmsg] ([yshift=\y cm]udm.south) -- node[above] {\tiny Sub Data} ([yshift=\y cm]amf.south);
+
+% 9. R17: AMF -> NSACF (slice check)
+\pgfmathsetmacro{\y}{\ystart - 8*\ystep}
+\draw[msg, r17red] ([yshift=\y cm]amf.south) -- node[above, text=r17red] {\tiny Slice Check} ([yshift=\y cm]nsacf.south);
+
+% 10. R17: NSACF -> AMF
+\pgfmathsetmacro{\y}{\ystart - 9*\ystep}
+\draw[rmsg, r17red] ([yshift=\y cm]nsacf.south) -- node[above, text=r17red] {\tiny Allowed} ([yshift=\y cm]amf.south);
+
+% 11. AMF -> Proxy (accept)
+\pgfmathsetmacro{\y}{\ystart - 10*\ystep}
+\draw[rmsg] ([yshift=\y cm]amf.south) -- node[above] {\tiny Reg Accept} ([yshift=\y cm]proxy.south);
+
+% R17 annotation
+\pgfmathsetmacro{\yann}{\ystart - 8.5*\ystep}
+\node[note, right] at ([yshift=\yann cm, xshift=0.1cm]nsacf.south) {R17};
+
+\end{tikzpicture}
+\caption{UE Initial Registration call flow (TS~23.502 Sec.~4.2.2.2). Solid arrows indicate requests; dashed arrows indicate responses. Red arrows show optional R17 NSACF slice admission control calls, executed only when \texttt{ENABLE\_NSACF=true}.}
+\label{fig:regflow}
+\end{figure}
+
+\subsection{NF Coverage Comparison}
+
+Fig.~\ref{fig:nf-comparison} compares NF coverage across our serverless implementation and the two baselines. Our system implements 12 NFs with 31 serverless functions, comparable to Open5GS (11 NFs) and free5GC (10 NFs). The serverless decomposition results in 2--6 functions per NF, enabling independent scaling of individual procedures.
+
+\begin{figure}[t]
+\centering
+\begin{tikzpicture}[
+    font=\scriptsize,
+    bar/.style={minimum height=0.35cm, anchor=west, rounded corners=1pt},
+]
+
+% Y positions for each NF
+\def\nfs{{"AMF","SMF","NRF","CHF","BSF","UDM","UDR","PCF","NWDAF","NSACF","AUSF","NSSF"}}
+\def\ours{{6,4,3,3,3,2,2,2,2,2,1,1}}
+\def\barscale{0.35}
+
+% Title labels
+\node[font=\scriptsize\bfseries, anchor=west] at (-0.3, 5.1) {NF};
+\node[font=\scriptsize\bfseries, anchor=west] at (1.0, 5.1) {Serverless5GC (31 fn)};
+
+% Draw bars
+\foreach \i in {0,...,11} {
+    \pgfmathsetmacro{\y}{4.5 - \i * 0.38}
+    % NF label
+    \pgfmathsetmacro{\nf}{\nfs[\i]}
+    \node[anchor=east] at (0.9, \y) {\nf};
+    % Bar
+    \pgfmathsetmacro{\w}{\ours[\i] * \barscale}
+    \pgfmathsetmacro{\isR17}{(\i == 3 || \i == 4 || \i == 8 || \i == 9) ? 1 : 0}
+    \ifnum\i=3
+        \fill[r17red!60, rounded corners=1pt] (1.0, \y-0.14) rectangle (1.0+\w, \y+0.14);
+    \else\ifnum\i=4
+        \fill[r17red!60, rounded corners=1pt] (1.0, \y-0.14) rectangle (1.0+\w, \y+0.14);
+    \else\ifnum\i=8
+        \fill[r17red!60, rounded corners=1pt] (1.0, \y-0.14) rectangle (1.0+\w, \y+0.14);
+    \else\ifnum\i=9
+        \fill[r17red!60, rounded corners=1pt] (1.0, \y-0.14) rectangle (1.0+\w, \y+0.14);
+    \else
+        \fill[nfblue!60, rounded corners=1pt] (1.0, \y-0.14) rectangle (1.0+\w, \y+0.14);
+    \fi\fi\fi\fi
+    % Count label
+    \pgfmathtruncatemacro{\cnt}{\ours[\i]}
+    \node[anchor=west] at (1.05+\w, \y) {\cnt};
+}
+
+% Legend
+\fill[nfblue!60, rounded corners=1pt] (0.0, -0.3) rectangle (0.4, -0.05);
+\node[anchor=west, font=\tiny] at (0.5, -0.175) {R15 Core};
+\fill[r17red!60, rounded corners=1pt] (1.6, -0.3) rectangle (2.0, -0.05);
+\node[anchor=west, font=\tiny] at (2.1, -0.175) {R17 Addition};
+
+% Comparison note
+\node[anchor=west, font=\tiny, text=gray] at (0.0, -0.65) {Baselines: Open5GS 11 NFs, free5GC 10 NFs};
+\node[anchor=west, font=\tiny, text=gray] at (0.0, -0.95) {(monolithic processes, no per-procedure decomposition)};
+
+\end{tikzpicture}
+\caption{NF coverage and per-NF function count. R15 core NFs (blue) provide standard 5GC procedures. R17 NFs (red) add analytics, charging, admission control, and PCF binding. Baselines deploy each NF as a single monolithic process.}
+\label{fig:nf-comparison}
+\end{figure}
+

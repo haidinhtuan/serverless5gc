@@ -1,0 +1,21 @@
+\section{Background and Related Work}
+\label{sec:background}
+
+\subsection{5G Core Service-Based Architecture}
+
+The 3GPP 5G System (5GS) architecture defines a set of network functions that communicate via service-based interfaces (SBI) using HTTP/2 and JSON~\cite{3gpp-23501}. The core NFs include the AMF for access and mobility management, the SMF for session management, the UDM and AUSF for subscriber data and authentication, and supporting functions such as NRF, PCF, and NSSF. Release~17 extends the architecture with additional NFs including the Network Data Analytics Function (NWDAF, TS~29.520), Charging Function (CHF, TS~32.291), Network Slice Admission Control Function (NSACF, TS~29.536), and Binding Support Function (BSF, TS~29.521). Control plane procedures---registration, authentication, PDU session establishment---follow standardized message flows defined in TS~23.502~\cite{3gpp-23502}.
+
+Several open-source implementations of the 5G core exist. Open5GS~\cite{open5gs} implements 11 5G NFs in C (AMF, SMF, UPF, UDM, UDR, AUSF, NRF, PCF, NSSF, BSF, SCP), while free5GC~\cite{free5gc} provides a Go-based implementation with 10 NFs. Both deploy NFs as persistent processes, typically containerized with Docker or Kubernetes. Recent benchmarking studies~\cite{oran-bench-2024, 5gc-bench-2023} have compared their control plane performance and resource consumption, establishing baseline expectations for 5G core implementations.
+
+\subsection{Serverless Computing for Network Functions}
+
+The application of serverless computing to network functions has been explored in several directions. Singhvi et al.~\cite{snf-2020} proposed Serverless Network Functions (SNF), demonstrating FaaS-based packet processing with flowlet-based work assignment. Breitgand~\cite{5gmedia-2018} explored serverless NFV for 5G media applications using Apache OpenWhisk. Hou et al.~\cite{qfaas-2022} proposed QFaaS, a QUIC-based FaaS framework that reduces function chain communication latency by 40\% on OpenFaaS. Zeng et al.~\cite{directfaas-2024} introduced DirectFaaS, separating control and data flows in serverless chains to reduce execution time by 30.9\%.
+
+These works focus on general network function virtualization rather than the 5G core specifically. For 5G core networks, Watanabe et al.~\cite{cloud5gc-2024} presented Cloud5GC, implementing a serverless 5G core on AWS using Lambda, DynamoDB, and SQS. Their work demonstrates feasibility on a public cloud platform with proprietary services.
+
+\subsection{Procedure-Based Decomposition}
+
+The concept of decomposing 5G core NFs by procedure rather than by service was formalized by Goshi et al.~\cite{pp5gs-2023} in PP5GS, showing 34--55\% reduction in computing resources and 40\% reduction in signaling traffic compared to traditional architectures. Barakabitze et al.~\cite{proc-decomp-2022} further analyzed procedure-based functional decomposition, demonstrating 50\% faster procedure completion.
+
+Our work differs from prior approaches in several key aspects. Unlike Cloud5GC~\cite{cloud5gc-2024}, we target open-source FaaS infrastructure (OpenFaaS on K3s), making the architecture reproducible and vendor-independent. Unlike PP5GS~\cite{pp5gs-2023}, which validates the concept through simulation, we provide a complete working implementation with 31 serverless functions covering 12 NFs including Release~17 additions. Furthermore, we introduce an SCTP/NGAP proxy for N2 interface compatibility and conduct a comparative evaluation against two established baselines.
+

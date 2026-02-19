@@ -1,12 +1,13 @@
 #!/bin/bash
 # Runs a load generation scenario against a target system and collects metrics.
 #
-# For serverless target: Uses HTTP load testing against OpenFaaS functions.
-# For open5gs/free5gc:   Uses UERANSIM (Docker) with SCTP/NGAP.
+# For serverless target:      Uses HTTP load testing against OpenFaaS functions.
+# For serverless-sctp target: Uses UERANSIM (Docker) via SCTP proxy.
+# For open5gs/free5gc:        Uses UERANSIM (Docker) with SCTP/NGAP.
 #
 # Usage: ./run-scenario.sh <scenario> <target> [run_number]
 #   scenario: idle | low | medium | high | burst
-#   target:   serverless | open5gs | free5gc
+#   target:   serverless | serverless-sctp | open5gs | free5gc
 #   run_number: 1 (default)
 #
 # Environment variables:
@@ -41,6 +42,31 @@ if [ ! -f "$SCENARIO_FILE" ]; then
 fi
 
 mkdir -p "$RESULTS_DIR"
+
+# ---------------------------------------------------------------------------
+# Restart the target 5GC to clear stale UE/session state from previous runs.
+# Without this, back-to-back runs with the same IMSIs cause PDU session
+# establishment failures (T3580 retry floods) due to accumulated state.
+# ---------------------------------------------------------------------------
+if [ "$TARGET" = "open5gs" ]; then
+    echo "Restarting Open5GS to clear stale state..."
+    ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "root@${TARGET_AMF_IP}" \
+        "docker compose -f /opt/open5gs/docker-compose.yml restart" 2>/dev/null
+    sleep 15
+    echo "Open5GS restarted."
+elif [ "$TARGET" = "free5gc" ]; then
+    echo "Restarting free5GC to clear stale state..."
+    ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "root@${TARGET_AMF_IP}" \
+        "cd /opt/free5gc && docker compose restart" 2>/dev/null
+    sleep 15
+    echo "free5GC restarted."
+elif [ "$TARGET" = "serverless-sctp" ]; then
+    echo "Restarting SCTP proxy to clear stale state..."
+    ssh -i "$SSH_KEY" -o StrictHostKeyChecking=no "root@${LOADGEN_IP}" \
+        "ssh -o StrictHostKeyChecking=no root@${TARGET_AMF_IP} 'systemctl restart sctp-proxy'" 2>/dev/null || true
+    sleep 5
+    echo "SCTP proxy restarted."
+fi
 
 echo "=== Starting scenario: ${SCENARIO} on ${TARGET} (run ${RUN}) ==="
 echo "Scenario file: ${SCENARIO_FILE}"
@@ -273,7 +299,7 @@ UEEOF
     # when started simultaneously). Each batch gets a separate container
     # with a distinct IMSI range and a stagger delay between batches.
     BATCH_SIZE=100
-    BATCH_STAGGER=20  # seconds between batches
+    BATCH_STAGGER=30  # seconds between batches
     NUM_BATCHES=$(( (UE_COUNT + BATCH_SIZE - 1) / BATCH_SIZE ))
 
     echo "Starting ${UE_COUNT} UEs in ${NUM_BATCHES} batches of ${BATCH_SIZE}..."

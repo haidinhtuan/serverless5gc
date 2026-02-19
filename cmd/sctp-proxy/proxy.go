@@ -9,15 +9,19 @@ import (
 	"io"
 	"log"
 	"net/http"
+
 	"sync"
 	"sync/atomic"
 
+	"github.com/free5gc/nas/nasMessage"
+	"github.com/free5gc/nas/nasType"
+	"github.com/free5gc/nas/security"
 	"github.com/free5gc/ngap/ngapType"
 	"github.com/ishidawataru/sctp"
-	"github.com/tdinh/serverless5gc/pkg/crypto"
-	"github.com/tdinh/serverless5gc/pkg/nas"
-	ngapCodec "github.com/tdinh/serverless5gc/pkg/ngap"
-	"github.com/tdinh/serverless5gc/pkg/state"
+	"github.com/haidinhtuan/serverless5gc/pkg/crypto"
+	"github.com/haidinhtuan/serverless5gc/pkg/nas"
+	ngapCodec "github.com/haidinhtuan/serverless5gc/pkg/ngap"
+	"github.com/haidinhtuan/serverless5gc/pkg/state"
 )
 
 // UE states for the per-UE state machine.
@@ -138,7 +142,7 @@ func (b *HTTPBackend) PDUSessionCreate(_ context.Context, req *PDUSessionRequest
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
-	if resp.StatusCode != http.StatusOK {
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
 		return nil, fmt.Errorf("smf-pdu-session-create returned %d: %s", resp.StatusCode, body)
 	}
 	var result PDUSessionResponse
@@ -222,14 +226,18 @@ func (p *SCTPProxy) handleConnection(conn *sctp.SCTPConn) {
 			return
 		}
 
-		responses, err := p.handleNGAPMessage(buf[:n])
+		responses, streamID, err := p.handleNGAPMessage(buf[:n])
 		if err != nil {
 			log.Printf("handle ngap: %v", err)
 			continue
 		}
 
 		for _, resp := range responses {
-			if _, writeErr := conn.SCTPWrite(resp, nil); writeErr != nil {
+			info := &sctp.SndRcvInfo{
+				Stream: streamID, // SID=0 for non-UE-associated, SID=1 for UE-associated
+				PPID:   60,       // NGAP PPID per IANA/TS 38.412
+			}
+			if _, writeErr := conn.SCTPWrite(resp, info); writeErr != nil {
 				log.Printf("sctp write: %v", writeErr)
 				return
 			}
@@ -237,26 +245,30 @@ func (p *SCTPProxy) handleConnection(conn *sctp.SCTPConn) {
 	}
 }
 
-// handleNGAPMessage processes one NGAP PDU and returns zero or more APER-encoded responses.
-func (p *SCTPProxy) handleNGAPMessage(data []byte) ([][]byte, error) {
+// handleNGAPMessage processes one NGAP PDU and returns zero or more APER-encoded responses
+// plus the SCTP stream ID to send them on (0=non-UE-associated, 1=UE-associated).
+func (p *SCTPProxy) handleNGAPMessage(data []byte) ([][]byte, uint16, error) {
 	ctx, err := ngapCodec.ParseNGAPMessage(data)
 	if err != nil {
-		return nil, fmt.Errorf("parse ngap: %w", err)
+		return nil, 0, fmt.Errorf("parse ngap: %w", err)
 	}
 
 	switch {
 	case ctx.MessageType == 0 && ctx.ProcedureCode == ngapType.ProcedureCodeNGSetup:
-		return p.handleNGSetup()
+		resp, err := p.handleNGSetup()
+		return resp, 0, err // non-UE-associated: stream 0
 
 	case ctx.MessageType == 0 && ctx.ProcedureCode == ngapType.ProcedureCodeInitialUEMessage:
-		return p.handleInitialUEMessage(ctx)
+		resp, err := p.handleInitialUEMessage(ctx)
+		return resp, 1, err // UE-associated: stream 1
 
 	case ctx.MessageType == 0 && ctx.ProcedureCode == ngapType.ProcedureCodeUplinkNASTransport:
-		return p.handleUplinkNASTransport(ctx)
+		resp, err := p.handleUplinkNASTransport(ctx)
+		return resp, 1, err // UE-associated: stream 1
 
 	default:
 		log.Printf("unhandled NGAP: type=%d procedure=%d", ctx.MessageType, ctx.ProcedureCode)
-		return nil, nil
+		return nil, 0, nil
 	}
 }
 
@@ -314,19 +326,27 @@ func (p *SCTPProxy) handleInitialUEMessage(ngapCtx *ngapCodec.NGAPContext) ([][]
 		ue.KAUSF, _ = hex.DecodeString(authPending.KAUSF)
 	}
 
-	// Derive NAS security keys: KAUSF -> KAMF -> KNASenc/KNASint
+	// Derive NAS security keys: KAUSF -> KSEAF -> KAMF -> KNASenc/KNASint (TS 33.501 key hierarchy)
 	if len(ue.KAUSF) > 0 {
+		snn := "5G:mnc001.mcc001.3gppnetwork.org"
 		abba := []byte{0x00, 0x00}
-		kamf, err := crypto.DeriveKAMF(ue.KAUSF, supi, abba)
+		supiDigits := supi[len("imsi-"):] // bare digits for KAMF derivation per TS 33.501
+		kseaf, err := crypto.DeriveKSEAF(ue.KAUSF, snn)
 		if err != nil {
-			log.Printf("UE %s: warning: KAMF derivation failed: %v", supi, err)
+			log.Printf("UE %s: warning: KSEAF derivation failed: %v", supi, err)
 		} else {
-			knasEnc, knasInt, err := crypto.DeriveKNASKeys(kamf, nas.CipherAlg5GEA0, nas.IntegAlg5GIA2)
+			kamf, err := crypto.DeriveKAMF(kseaf, supiDigits, abba)
 			if err != nil {
-				log.Printf("UE %s: warning: KNASkey derivation failed: %v", supi, err)
+				log.Printf("UE %s: warning: KAMF derivation failed: %v", supi, err)
 			} else {
-				ue.KNASenc = knasEnc
-				ue.KNASint = knasInt
+				knasEnc, knasInt, err := crypto.DeriveKNASKeys(kamf, nas.CipherAlg5GEA0, nas.IntegAlg5GIA2)
+				if err != nil {
+					log.Printf("UE %s: warning: KNASkey derivation failed: %v", supi, err)
+				} else {
+					ue.KNASenc = knasEnc
+					ue.KNASint = knasInt
+					log.Printf("UE %s: NAS security keys derived", supi)
+				}
 			}
 		}
 	}
@@ -357,6 +377,8 @@ func (p *SCTPProxy) handleUplinkNASTransport(ngapCtx *ngapCodec.NGAPContext) ([]
 	if ue == nil {
 		return nil, fmt.Errorf("no UE context for RAN-UE-NGAP-ID %d", ngapCtx.RANUeNgapID)
 	}
+
+	log.Printf("UE %s: uplink NAS PDU (%d bytes)", ue.SUPI, len(ngapCtx.NASPDU))
 
 	// Strip NAS security header if present (after SMC, UE sends protected NAS)
 	nasPDU := nas.StripSecurityHeader(ngapCtx.NASPDU)
@@ -403,24 +425,47 @@ func (p *SCTPProxy) handleAuthResponse(ue *UEContext, ngapCtx *ngapCodec.NGAPCon
 
 	// Verify RES* against stored XRES*
 	if len(ue.XRES) > 0 && !bytes.Equal(resStar, ue.XRES) {
-		log.Printf("UE %s: RES* mismatch (got %x, want %x)", ue.SUPI, resStar, ue.XRES)
+		log.Printf("UE %s: RES* mismatch", ue.SUPI)
 	}
 
 	log.Printf("UE %s: Authentication Response verified", ue.SUPI)
 
-	// Build NAS Security Mode Command (must be integrity-protected per TS 24.501 Section 4.4.6)
-	replayedCap := ue.UESecCap
-	if replayedCap == nil {
-		replayedCap = &nas.UESecurityCapability{EA0: true, EA1: true, EA2: true, EA3: true, IA0: true, IA1: true, IA2: true, IA3: true}
-	}
-	smcPlain := nas.EncodeSecurityModeCommand(&nas.SecurityModeCommand{
-		SelectedCiphering: nas.CipherAlg5GEA0, // null ciphering (plaintext)
-		SelectedIntegrity: nas.IntegAlg5GIA2,   // 128-5G-IA2 (AES-CMAC)
-		NgKSI:             0,
-		ReplayedUESecCap:  replayedCap,
-	})
+	// Build NAS Security Mode Command using free5gc NAS library
+	smcMsg := nasMessage.NewSecurityModeCommand(0)
+	smcMsg.ExtendedProtocolDiscriminator.SetExtendedProtocolDiscriminator(nasMessage.Epd5GSMobilityManagementMessage)
+	smcMsg.SpareHalfOctetAndSecurityHeaderType.SetSecurityHeaderType(nas.SecurityHeaderPlain)
+	smcMsg.SecurityModeCommandMessageIdentity.SetMessageType(nas.MsgTypeSecurityModeCommand)
+	smcMsg.SelectedNASSecurityAlgorithms.SetTypeOfCipheringAlgorithm(nas.CipherAlg5GEA0)
+	smcMsg.SelectedNASSecurityAlgorithms.SetTypeOfIntegrityProtectionAlgorithm(nas.IntegAlg5GIA2)
+	smcMsg.SpareHalfOctetAndNgksi.SetNasKeySetIdentifiler(0)
 
-	// Build integrity-protected NAS with real MAC (count=0, bearer=1, direction=1 for DL)
+	// Replay UE security capabilities
+	if ue.UESecCap != nil && len(ue.UESecCap.RawBytes) > 0 {
+		smcMsg.ReplayedUESecurityCapabilities.SetLen(uint8(len(ue.UESecCap.RawBytes)))
+		copy(smcMsg.ReplayedUESecurityCapabilities.Buffer, ue.UESecCap.RawBytes)
+	} else {
+		smcMsg.ReplayedUESecurityCapabilities.SetLen(2)
+		smcMsg.ReplayedUESecurityCapabilities.Buffer = []byte{0xF0, 0xF0}
+	}
+
+	// IMEISV Request (matches Open5GS behavior)
+	smcMsg.IMEISVRequest = nasType.NewIMEISVRequest(nasMessage.SecurityModeCommandIMEISVRequestType)
+	smcMsg.IMEISVRequest.SetIMEISVRequestValue(1)
+
+	// Additional 5G Security Information
+	smcMsg.Additional5GSecurityInformation = nasType.NewAdditional5GSecurityInformation(nasMessage.SecurityModeCommandAdditional5GSecurityInformationType)
+	smcMsg.Additional5GSecurityInformation.SetLen(1)
+	smcMsg.Additional5GSecurityInformation.SetRINMR(0)
+	smcMsg.Additional5GSecurityInformation.SetHDP(0)
+
+	// Encode SMC to bytes
+	var smcBuf bytes.Buffer
+	if err := smcMsg.EncodeSecurityModeCommand(&smcBuf); err != nil {
+		return nil, fmt.Errorf("encode SMC: %w", err)
+	}
+	smcPlain := smcBuf.Bytes()
+
+	// Build integrity-protected NAS with MAC (bearer=1, direction=1 for DL)
 	smc, err := buildSecurityProtectedNAS(ue.KNASint, smcPlain, nas.SecurityHeaderIntegrityProtectedNewCtx, 0, ue.DLCount)
 	if err != nil {
 		return nil, fmt.Errorf("build SMC with MAC: %w", err)
@@ -457,19 +502,13 @@ func (p *SCTPProxy) handleSecurityModeComplete(ue *UEContext, ngapCtx *ngapCodec
 		return nil, fmt.Errorf("register %s: %w", ue.SUPI, err)
 	}
 
-	// Build Registration Accept NAS message (must be security-protected after SMC)
-	var regAcceptPlain []byte
-	if regResp.NASMessage != "" {
-		regAcceptPlain, _ = hex.DecodeString(regResp.NASMessage)
-	}
-	if len(regAcceptPlain) == 0 {
-		regAcceptPlain = nas.EncodeRegistrationAccept(&nas.RegistrationAccept{
-			RegistrationResult: nas.RegResult3GPPAccess,
-			GUTI:               regResp.GUTI,
-			T3512Value:         nas.T3512Default,
-		})
-	}
-	regAcceptNAS, err := buildSecurityProtectedNAS(ue.KNASint, regAcceptPlain, nas.SecurityHeaderIntegrityProtectedCipheredNew, ue.DLSeqNum, ue.DLCount)
+	// Build Registration Accept NAS message locally (must be security-protected after SMC)
+	regAcceptPlain := nas.EncodeRegistrationAccept(&nas.RegistrationAccept{
+		RegistrationResult: nas.RegResult3GPPAccess,
+		GUTI:               regResp.GUTI,
+		T3512Value:         nas.T3512Default,
+	})
+	regAcceptNAS, err := buildSecurityProtectedNAS(ue.KNASint, regAcceptPlain, nas.SecurityHeaderIntegrityProtectedCiphered, ue.DLSeqNum, ue.DLCount)
 	if err != nil {
 		return nil, fmt.Errorf("build reg accept with MAC: %w", err)
 	}
@@ -503,14 +542,15 @@ func (p *SCTPProxy) handleULNASTransport(ue *UEContext, ngapCtx *ngapCodec.NGAPC
 
 	// Check if inner message is PDU Session Establishment Request
 	if payload[0] == nas.EPD5GSM && payload[3] == nas.MsgTypePDUSessionEstablishmentRequest {
-		return p.handlePDUSessionEstablishment(ue, pduSessionID, dnn, snssai)
+		pti := payload[2] // Procedure Transaction Identity must be echoed in response
+		return p.handlePDUSessionEstablishment(ue, pduSessionID, pti, dnn, snssai)
 	}
 
 	log.Printf("UE %s: unhandled UL NAS payload EPD=0x%02x type=0x%02x", ue.SUPI, payload[0], payload[3])
 	return nil, nil
 }
 
-func (p *SCTPProxy) handlePDUSessionEstablishment(ue *UEContext, pduSessionID uint8, dnn string, snssai *nas.NSSAI) ([][]byte, error) {
+func (p *SCTPProxy) handlePDUSessionEstablishment(ue *UEContext, pduSessionID uint8, pti uint8, dnn string, snssai *nas.NSSAI) ([][]byte, error) {
 	if dnn == "" {
 		dnn = "internet"
 	}
@@ -538,7 +578,7 @@ func (p *SCTPProxy) handlePDUSessionEstablishment(ue *UEContext, pduSessionID ui
 
 	// Build a minimal PDU Session Establishment Accept NAS, wrapped in DL NAS Transport
 	// For eval purposes, a simple accept with dummy IP is sufficient
-	pduAcceptPlain := buildPDUSessionAcceptNAS(pduSessionID)
+	pduAcceptPlain := buildPDUSessionAcceptNAS(pduSessionID, pti)
 	pduAcceptNAS, err := buildSecurityProtectedNAS(ue.KNASint, pduAcceptPlain, nas.SecurityHeaderIntegrityProtectedCiphered, ue.DLSeqNum, ue.DLCount)
 	if err != nil {
 		return nil, fmt.Errorf("build pdu accept with MAC: %w", err)
@@ -556,19 +596,32 @@ func (p *SCTPProxy) handlePDUSessionEstablishment(ue *UEContext, pduSessionID ui
 }
 
 // buildSecurityProtectedNAS wraps a plain NAS message with a security header containing a real MAC.
-// Uses 128-EIA2 (AES-CMAC) for integrity protection. Bearer=1, direction=1 (DL) per TS 33.501.
+// Uses free5gc security library for MAC computation (128-EIA2 / AES-CMAC).
 func buildSecurityProtectedNAS(knasInt []byte, plainNAS []byte, secHdrType byte, sqn byte, dlCount uint32) ([]byte, error) {
 	if len(knasInt) == 0 {
-		// Fallback to zero MAC if no integrity key available
 		return nas.WrapSecurityHeader(plainNAS, secHdrType, sqn), nil
 	}
 
-	mac, err := crypto.ComputeNASMAC(knasInt, dlCount, 0x01, 0x01, plainNAS)
+	// MAC is computed over SQN || plainNAS per TS 24.501 Section 4.4.3.1
+	macInput := make([]byte, 1+len(plainNAS))
+	macInput[0] = sqn
+	copy(macInput[1:], plainNAS)
+
+	var knasIntArr [16]uint8
+	copy(knasIntArr[:], knasInt)
+	mac, err := security.NASMacCalculate(
+		security.AlgIntegrity128NIA2,
+		knasIntArr,
+		dlCount,
+		security.Bearer3GPP,
+		security.DirectionDownlink,
+		macInput,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("compute NAS MAC: %w", err)
 	}
 
-	// Manually construct: EPD(1) + SecHdrType(1) + MAC(4) + SQN(1) + plainNAS
+	// Construct: EPD(1) + SecHdrType(1) + MAC(4) + SQN(1) + plainNAS
 	outer := make([]byte, 0, 7+len(plainNAS))
 	outer = append(outer, nas.EPD5GMM, secHdrType)
 	outer = append(outer, mac...)
@@ -578,14 +631,14 @@ func buildSecurityProtectedNAS(knasInt []byte, plainNAS []byte, secHdrType byte,
 }
 
 // buildPDUSessionAcceptNAS builds a DL NAS Transport containing a PDU Session Establishment Accept.
-func buildPDUSessionAcceptNAS(pduSessionID uint8) []byte {
+func buildPDUSessionAcceptNAS(pduSessionID uint8, pti uint8) []byte {
 	// Inner: PDU Session Establishment Accept (TS 24.501 Section 8.3.2)
 	// Format: EPD(1) + PSID(1) + PTI(1) + MsgType(1) + SSCmode|PDUtype(1) +
 	//         AuthQoSRules(LV-E) + SessionAMBR(LV) + [PDUAddress(TLV)]
 	inner := []byte{
 		nas.EPD5GSM,       // EPD
 		pduSessionID,      // PDU Session ID
-		0x00,              // PTI
+		pti,               // PTI (echoed from request)
 		0xC2,              // PDU Session Establishment Accept message type
 		0x11,              // SSC mode 1 (bits 5-7) | PDU session type IPv4 (bits 1-3)
 		// Authorized QoS rules (LV-E: 2-byte length + value)

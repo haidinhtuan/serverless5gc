@@ -1,0 +1,19 @@
+\section{Introduction}
+
+The transition to 5G networks introduces a Service-Based Architecture (SBA) for the core network, where network functions (NFs) expose services via well-defined interfaces~\cite{3gpp-23501}. While this architectural shift enables cloud-native deployments using containers and microservices, current implementations still provision persistent processes for each NF, consuming resources regardless of actual traffic demand.
+
+This inefficiency is particularly pronounced in scenarios common to private 5G deployments, enterprise networks, and emerging markets, where traffic patterns exhibit high variability with extended idle periods. A 5G core network comprising the Access and Mobility Management Function (AMF), Session Management Function (SMF), and supporting NFs must remain fully provisioned even when no UEs are actively communicating, resulting in wasted computational resources and unnecessary operational costs.
+
+Serverless computing, or Function-as-a-Service (FaaS), offers an alternative model where code executes only in response to events, with the platform handling scaling---including scaling to zero when idle. This pay-per-invocation model aligns naturally with the event-driven nature of 3GPP signaling procedures, where distinct operations such as registration, authentication, and session establishment follow well-defined request-response patterns.
+
+In this paper, we propose and evaluate a \textit{Function-per-Procedure} architecture for the 5G core network. Rather than deploying monolithic NFs as persistent containers, we decompose each NF into individual serverless functions, one per 3GPP procedure. This approach enables fine-grained scaling where only the procedures actively handling traffic consume resources.
+
+Our contributions are as follows:
+\begin{itemize}
+    \item We design and implement a complete serverless 5G core network with 31 functions across 12 NFs, covering core Release~15 procedures and Release~17 NFs (NWDAF, CHF, NSACF, BSF), following a Function-per-Procedure decomposition mapped to 3GPP specifications.
+    \item We introduce an SCTP/NGAP proxy that bridges the standard N2 interface to the serverless HTTP backend, enabling compatibility with unmodified radio access network equipment and simulators.
+    \item We conduct a comparative evaluation against Open5GS and free5GC under five traffic scenarios, analyzing control plane latency, resource consumption, and cost efficiency.
+\end{itemize}
+
+The remainder of this paper is organized as follows. Section~\ref{sec:background} discusses background and related work. Section~\ref{sec:architecture} presents our system architecture. Section~\ref{sec:evaluation} details the evaluation methodology and results. Section~\ref{sec:conclusion} concludes the paper.
+

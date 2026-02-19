@@ -5,8 +5,8 @@ import (
 	"log"
 	"os"
 
-	ngapCodec "github.com/tdinh/serverless5gc/pkg/ngap"
-	"github.com/tdinh/serverless5gc/pkg/state"
+	ngapCodec "github.com/haidinhtuan/serverless5gc/pkg/ngap"
+	"github.com/haidinhtuan/serverless5gc/pkg/state"
 )
 
 func main() {

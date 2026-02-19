@@ -11,9 +11,9 @@ import (
 	"strings"
 
 	handler "github.com/openfaas/templates-sdk/go-http"
-	"github.com/tdinh/serverless5gc/pkg/models"
-	"github.com/tdinh/serverless5gc/pkg/sbi"
-	"github.com/tdinh/serverless5gc/pkg/state"
+	"github.com/haidinhtuan/serverless5gc/pkg/models"
+	"github.com/haidinhtuan/serverless5gc/pkg/sbi"
+	"github.com/haidinhtuan/serverless5gc/pkg/state"
 )
 
 // PFCPDeleter abstracts PFCP deletion for testability.

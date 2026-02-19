@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	handler "github.com/openfaas/templates-sdk/go-http"
-	"github.com/tdinh/serverless5gc/pkg/state"
+	"github.com/haidinhtuan/serverless5gc/pkg/state"
 )
 
 func setupMock(t *testing.T) *state.MockKVStore {
