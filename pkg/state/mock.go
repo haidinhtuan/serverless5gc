@@ -7,17 +7,20 @@ import (
 	"sync"
 )
 
-// MockKVStore is an in-memory KVStore for testing.
+// MockKVStore is an in-memory KVStore for unit testing. It stores JSON-serialized
+// values in a map protected by a read-write mutex. All function handler tests
+// use this to avoid requiring a running Redis or etcd instance.
 type MockKVStore struct {
 	mu   sync.RWMutex
 	data map[string][]byte
 }
 
-// NewMockKVStore creates a new in-memory mock store.
+// NewMockKVStore creates a new empty in-memory store.
 func NewMockKVStore() *MockKVStore {
 	return &MockKVStore{data: make(map[string][]byte)}
 }
 
+// Put stores a JSON-serialized value.
 func (m *MockKVStore) Put(_ context.Context, key string, value interface{}) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -29,6 +32,7 @@ func (m *MockKVStore) Put(_ context.Context, key string, value interface{}) erro
 	return nil
 }
 
+// Get retrieves and deserializes a value. Returns "key %s not found" for missing keys.
 func (m *MockKVStore) Get(_ context.Context, key string, dest interface{}) error {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -39,6 +43,7 @@ func (m *MockKVStore) Get(_ context.Context, key string, dest interface{}) error
 	return json.Unmarshal(data, dest)
 }
 
+// Delete removes a key from the store.
 func (m *MockKVStore) Delete(_ context.Context, key string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()

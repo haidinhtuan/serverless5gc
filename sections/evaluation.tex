@@ -152,7 +152,7 @@ Unlike prior benchmarks where free5GC exhibited scalability issues, our updated 
         width=\columnwidth,
         height=6cm,
         ylabel={CPU Usage (Seconds)},
-        symbolic x coords={Low, High, Burst},
+        symbolic x coords={Low, Medium, High, Burst},
         xtick=data,
         nodes near coords,
         nodes near coords align={vertical},
@@ -162,11 +162,11 @@ Unlike prior benchmarks where free5GC exhibited scalability issues, our updated 
         enlarge x limits=0.2,
         grid=y,
     ]
-    \addplot coordinates { (Low,51) (High,53) (Burst,53) };
+    \addplot coordinates { (Low,51) (Medium,52) (High,53) (Burst,53) };
     \addlegendentry{Serverless}
-    \addplot coordinates { (Low,36) (High,35) (Burst,37) };
+    \addplot coordinates { (Low,36) (Medium,34) (High,35) (Burst,37) };
     \addlegendentry{Open5GS}
-    \addplot coordinates { (Low,45) (High,49) (Burst,31) };
+    \addplot coordinates { (Low,45) (Medium,46) (High,49) (Burst,31) };
     \addlegendentry{Free5GC}
     \end{axis}
 \end{tikzpicture}

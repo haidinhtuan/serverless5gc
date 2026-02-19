@@ -1,3 +1,13 @@
+// Package sbi provides the inter-NF communication client for the serverless 5GC.
+// In the Function-per-Procedure architecture, each function calls other functions
+// through the OpenFaaS gateway using HTTP POST with JSON payloads. This mirrors
+// the 3GPP Service-Based Interface (SBI) pattern where NFs communicate via
+// RESTful HTTP/2 APIs (TS 29.500), adapted for the OpenFaaS function routing model.
+//
+// The gateway URL defaults to http://gateway.openfaas:8080/function (the standard
+// OpenFaaS in-cluster endpoint). Go's default HTTP transport maintains a persistent
+// keep-alive connection pool, so each function call reuses an existing TCP connection
+// rather than performing a fresh handshake.
 package sbi
 
 import (
