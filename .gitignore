@@ -29,6 +29,9 @@ docs/
 deploy/cloud/
 deploy/provider/
 
+# Auto-generated VM IP files
+deploy/ionos/vm-ips.env
+
 # Temporary
 tmp/
 *.tmp
