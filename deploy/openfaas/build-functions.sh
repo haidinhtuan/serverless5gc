@@ -24,7 +24,7 @@ for arg in "$@"; do
     esac
 done
 
-MODULE="github.com/tdinh/serverless5gc"
+MODULE="github.com/haidinhtuan/serverless5gc"
 DOCKERFILE="${SCRIPT_DIR}/Dockerfile.template"
 ENTRY_DIR="${PROJECT_DIR}/cmd/entry"
 

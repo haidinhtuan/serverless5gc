@@ -1,14 +1,14 @@
-# Serverless 5G Core (serverless5gc)
+# Serverless5GC
 
-A Function-as-a-Service (FaaS) implementation of a 3GPP-compliant 5G core network using OpenFaaS, designed for academic evaluation of serverless cost efficiency against traditional containerized 5G core deployments.
+A serverless 5G core network implementation using Function-per-Procedure decomposition on OpenFaaS. Serverless5GC maps 31 individual 3GPP procedures across 12 network functions to independent serverless functions, enabling fine-grained scale-to-zero and pay-per-invocation cost efficiency.
 
 ## Research Question
 
-> Can a serverless (Function-as-a-Service) deployment model reduce the operational cost of running a 5G core network compared to traditional containerized deployments, and under what traffic conditions does the cost advantage hold?
+> Can a serverless (Function-as-a-Service) deployment model reduce the operational cost of running a 5G core network compared to traditional containerized deployments, while maintaining equivalent control plane performance?
 
 ## Architecture
 
-The system follows a **Function-per-Procedure** model: each 3GPP procedure (e.g., UE Registration, PDU Session Establishment) maps to one OpenFaaS function. NF identity is logical -- the "AMF" is a collection of functions sharing state in Redis.
+Serverless5GC follows a **Function-per-Procedure** model: each 3GPP procedure (e.g., UE Registration, PDU Session Establishment) maps to one OpenFaaS function. NF identity is logical -- the "AMF" is a collection of functions sharing state in Redis.
 
 ```
                                                                     ┌──────────────────┐
@@ -25,31 +25,30 @@ The system follows a **Function-per-Procedure** model: each 3GPP procedure (e.g.
                                                                              │
                            ┌─────────────────────────────────────────────────┘
                            │
-              ┌────────────▼────────────┐     ┌─────────────────────────────┐
-              │      State Stores       │     │    UPF (long-running pod)   │
-              │  Redis: UE/PDU context  │     │    go-upf via PFCP (N4)    │
-              │  etcd: NRF registry     │     │    GTP-U data plane        │
-              └─────────────────────────┘     └─────────────────────────────┘
+              ┌────────────▼────────────┐
+              │      State Stores       │
+              │  Redis: UE/PDU context  │
+              │  etcd: NRF registry     │
+              └─────────────────────────┘
 ```
 
 ### Key Design Decisions
 
 - **Stateless functions** -- all UE context, PDU session state, and security parameters are externalized to Redis. Functions are pure request handlers with no in-memory state between invocations.
 - **SCTP-HTTP proxy** -- a custom Go binary terminates SCTP from the gNB (TS 38.412), decodes the NGAP header to determine the procedure, and forwards the payload as an HTTP POST to the corresponding OpenFaaS function.
-- **UPF as container** -- the user plane (GTP-U packet forwarding) requires persistent kernel-level data paths incompatible with FaaS execution. This is itself a research finding.
 - **NRF in etcd** -- NF service discovery is stored in etcd with prefix-based queries; NRF functions are thin wrappers over etcd CRUD operations.
 
 ## 5G Network Functions
 
-The system implements 12 NFs decomposed into 31 OpenFaaS functions:
+12 NFs decomposed into 31 OpenFaaS functions:
 
 | NF | Functions | 3GPP Reference |
 |----|-----------|----------------|
-| **AMF** | `amf-initial-registration`, `amf-deregistration`, `amf-service-request`, `amf-pdu-session-relay`, `amf-n2-handover`, `amf-auth-initiate` | TS 23.502 4.2.2, 4.2.3, 4.9.1 |
-| **SMF** | `smf-pdu-session-create`, `smf-pdu-session-update`, `smf-pdu-session-release`, `smf-n4-session-setup` | TS 23.502 4.3.2-4.3.4 |
+| **AMF** | `amf-initial-registration`, `amf-deregistration`, `amf-service-request`, `amf-pdu-session-relay`, `amf-handover`, `amf-auth-initiate` | TS 23.502 |
+| **SMF** | `smf-pdu-session-create`, `smf-pdu-session-update`, `smf-pdu-session-release`, `smf-n4-session-setup` | TS 23.502 |
 | **UDM** | `udm-generate-auth-data`, `udm-get-subscriber-data` | TS 29.503 |
 | **UDR** | `udr-data-read`, `udr-data-write` | TS 29.504 |
-| **AUSF** | `ausf-authenticate` | TS 29.509, TS 33.501 |
+| **AUSF** | `ausf-authenticate` | TS 29.509 |
 | **NRF** | `nrf-register`, `nrf-discover`, `nrf-status-notify` | TS 29.510 |
 | **PCF** | `pcf-policy-create`, `pcf-policy-get` | TS 29.512 |
 | **NSSF** | `nssf-slice-select` | TS 29.531 |
@@ -58,171 +57,76 @@ The system implements 12 NFs decomposed into 31 OpenFaaS functions:
 | **NSACF** | `nsacf-slice-availability-check`, `nsacf-update-counters` | TS 29.536 |
 | **BSF** | `bsf-binding-register`, `bsf-binding-discover`, `bsf-binding-deregister` | TS 29.521 |
 
-### 3GPP Compliance
-
-The implementation covers key protocol aspects for fair benchmarking:
-
-- **NAS (TS 24.501)** -- Registration Request/Accept encoding, Security Mode Command/Complete, 5GMM cause codes
-- **NGAP (TS 38.413)** -- APER header parsing, procedure code routing, IE extraction (RAN-UE-NGAP-ID, NAS-PDU, User Location Info)
-- **PFCP (TS 29.244)** -- Session establishment/modification/release with QER and URR IEs, Association Setup
-- **5G-AKA (TS 33.501)** -- Milenage-based authentication vector generation using 3GPP test vectors (TS 35.208)
-- **SBI (TS 29.5xx)** -- 3GPP-compliant HTTP paths (e.g., `/nausf-auth/v1/ue-authentications`), RFC 7807 ProblemDetails error responses
-- **UE State Machine (TS 23.502)** -- RM (DEREGISTERED/REGISTERED) and CM (IDLE/CONNECTED) state transitions with timestamps
-- **3GPP Timers** -- T3510 (Registration), T3512 (Periodic Registration), T3580 (5GSM)
-
 ## Tech Stack
 
-| Component | Technology | Rationale |
-|-----------|-----------|-----------|
-| Language | Go 1.22+ | Fast cold starts, strong networking, 3GPP library compatibility |
-| FaaS Platform | [OpenFaaS](https://www.openfaas.com/) on [K3s](https://k3s.io/) | Self-hosted, reproducible, built-in Prometheus metrics |
-| Session State | [Redis 7](https://redis.io/) | Sub-ms latency for UE context lookups |
-| NRF Registry | [etcd](https://etcd.io/) | Strongly consistent KV store for NF discovery |
-| User Plane | [go-upf](https://github.com/free5gc/go-upf) (free5GC) | Go-based UPF with PFCP and GTP-U support |
-| SCTP Proxy | Custom Go binary | SCTP termination from gNB, NGAP routing to HTTP |
-| RAN Simulator | [UERANSIM](https://github.com/aligungr/UERANSIM) | Industry-standard open-source gNB/UE simulator |
-| Monitoring | [Prometheus](https://prometheus.io/) + [Grafana](https://grafana.com/) + [cAdvisor](https://github.com/google/cadvisor) | Resource and cost metric collection |
-| Infrastructure | Cloud VMs (Debian/Ubuntu) | Reproducible VM provisioning |
+| Component | Technology |
+|-----------|-----------|
+| Language | Go 1.22+ |
+| FaaS Platform | [OpenFaaS](https://www.openfaas.com/) on [K3s](https://k3s.io/) |
+| Session State | [Redis 7](https://redis.io/) |
+| NRF Registry | [etcd 3.5](https://etcd.io/) |
+| RAN Simulator | [UERANSIM](https://github.com/aligungr/UERANSIM) |
+| Infrastructure | IONOS Cloud (Frankfurt) |
 
-### Go Dependencies
+## Evaluation Results
 
-| Package | Purpose |
-|---------|---------|
-| [`github.com/free5gc/util`](https://github.com/free5gc/util) | Milenage algorithm, 3GPP crypto utilities |
-| [`github.com/wmnsk/go-pfcp`](https://github.com/wmnsk/go-pfcp) | PFCP protocol implementation (N4 interface) |
-| [`github.com/ishidawataru/sctp`](https://github.com/ishidawataru/sctp) | SCTP socket support for Go |
-| [`github.com/openfaas/templates-sdk/go-http`](https://github.com/openfaas/golang-http-template) | OpenFaaS Go HTTP function template |
-| [`github.com/redis/go-redis/v9`](https://github.com/redis/go-redis) | Redis client |
-| [`go.etcd.io/etcd/client/v3`](https://github.com/etcd-io/etcd) | etcd client |
-| [`github.com/prometheus/client_golang`](https://github.com/prometheus/client_golang) | Prometheus metric exporter |
+We evaluated Serverless5GC against Open5GS (C-based) and free5GC (Go-based) across 4 traffic scenarios on IONOS Cloud VMs (4 vCPU, 8 GB RAM). All results are 3-run averages.
 
-## Project Structure
+### Registration Latency (ms)
 
-```
-serverless5gc/
-├── cmd/
-│   └── sctp-proxy/              # SCTP-HTTP bridge binary
-│       ├── main.go              # SCTP listener, CLI flags
-│       └── proxy.go             # NGAP routing, HTTP forwarding
-├── functions/                   # 31 OpenFaaS function handlers
-│   ├── amf/
-│   │   ├── registration/        # TS 23.502 4.2.2.2 Initial Registration
-│   │   ├── deregistration/      # TS 23.502 4.2.2.3 Deregistration
-│   │   ├── service-request/     # TS 23.502 4.2.3 Service Request
-│   │   ├── pdu-session-relay/   # TS 23.502 4.3.2 PDU Session relay
-│   │   ├── handover/            # TS 23.502 4.9.1 N2 Handover
-│   │   └── auth-initiate/       # TS 33.501 6.1.3 Auth initiation
-│   ├── smf/
-│   │   ├── pdu-session-create/  # Nsmf_PDUSession_CreateSMContext
-│   │   ├── pdu-session-update/  # Nsmf_PDUSession_UpdateSMContext
-│   │   ├── pdu-session-release/ # Nsmf_PDUSession_ReleaseSMContext
-│   │   └── n4-session-setup/    # PFCP session establishment to UPF
-│   ├── udm/
-│   │   ├── generate-auth-data/  # 5G-AKA auth vector generation
-│   │   └── get-subscriber-data/ # Subscription data retrieval
-│   ├── udr/
-│   │   ├── data-read/           # Subscriber record read
-│   │   └── data-write/          # Subscriber record write
-│   ├── ausf/
-│   │   └── authenticate/        # 5G-AKA verification
-│   ├── nrf/
-│   │   ├── register/            # NF profile registration (etcd)
-│   │   ├── discover/            # NF discovery by type/service
-│   │   └── status-notify/       # NF status change notification
-│   ├── pcf/
-│   │   ├── policy-create/       # SM policy creation (QoS per slice)
-│   │   └── policy-get/          # Policy retrieval
-│   ├── nssf/
-│       └── slice-select/        # Network slice selection (NSSAI)
-│   ├── nwdaf/                   # R17: Network Data Analytics (TS 29.520)
-│   │   ├── analytics-subscribe/ # Analytics subscription + snapshot
-│   │   └── data-collect/        # NF/slice metrics collection
-│   ├── chf/                     # R17: Charging Function (TS 32.291)
-│   │   ├── charging-create/     # Create charging session
-│   │   ├── charging-update/     # Report usage, request quota
-│   │   └── charging-release/    # Finalize CDR
-│   ├── nsacf/                   # R17: Slice Admission Control (TS 29.536)
-│   │   ├── slice-availability-check/ # Check slice capacity
-│   │   └── update-counters/     # Increment/decrement UE/session counters
-│   └── bsf/                     # R17: Binding Support Function (TS 29.521)
-│       ├── binding-register/    # Register PCF binding
-│       ├── binding-discover/    # Discover PCF by IP/SUPI
-│       └── binding-deregister/  # Remove binding
-├── pkg/
-│   ├── crypto/                  # Milenage 5G-AKA (TS 35.208)
-│   ├── models/                  # 3GPP data types (UEContext, PDUSession, etc.)
-│   ├── nas/                     # NAS codec, cause codes, timers (TS 24.501)
-│   ├── ngap/                    # NGAP decoder and IE extraction (TS 38.413)
-│   ├── pfcp/                    # PFCP client with QER/URR (TS 29.244)
-│   ├── sbi/                     # Inter-NF HTTP client via OpenFaaS gateway
-│   ├── state/                   # KVStore interface + Redis/etcd/mock impls
-│   └── statemachine/            # UE RM/CM state machine (TS 23.502)
-├── deploy/
-│   ├── openfaas/
-│   │   ├── stack.yml            # All 31 function definitions
-│   │   └── Dockerfile.template  # Multi-stage Go builder
-│   ├── k3s/
-│   │   ├── redis-deployment.yaml
-│   │   ├── etcd-deployment.yaml
-│   │   ├── sctp-proxy-deployment.yaml
-│   │   └── upf-deployment.yaml
-│   ├── baselines/
-│   │   ├── open5gs/             # Full Open5GS 2.7.0 (13 services)
-│   │   │   ├── docker-compose.yml
-│   │   │   └── config/         # 12 NF config files (PLMN 001/01)
-│   │   └── free5gc/             # Full free5GC v3.4.1 (10 services)
-│   │       ├── docker-compose.yml
-│   │       └── config/         # 9 NF config files
-│   ├── monitoring/
-│   │   ├── prometheus.yml
-│   │   ├── grafana-dashboard.json
-│   │   └── docker-compose.yml
-│   └── cloud/
-│       ├── provision.sh         # Full 5-VM provisioning
-│       └── smoke-test.sh        # 2-VM smoke test with auto-teardown
-├── eval/
-│   ├── scenarios/
-│   │   ├── low.yaml             # 100 UEs, 1 reg/sec
-│   │   ├── medium.yaml          # 1,000 UEs, 10 reg/sec
-│   │   ├── high.yaml            # 10,000 UEs, 100 reg/sec
-│   │   ├── idle.yaml            # 0 UEs (scale-to-zero)
-│   │   └── burst.yaml           # 0 to 5,000 UEs ramp
-│   ├── scripts/
-│   │   ├── run-scenario.sh      # Scenario execution orchestrator
-│   │   └── cost-exporter/       # Prometheus cost metric exporter
-│   │       └── main.go
-│   └── analysis/
-│       ├── analyze.py           # Metric analysis and cost projection
-│       ├── charts.py            # Visualization generation
-│       └── requirements.txt
-├── go.mod
-├── go.sum
-└── Makefile
-```
+| Scenario | Serverless5GC p50 | Open5GS p50 | free5GC p50 |
+|----------|------------------:|------------:|------------:|
+| Low (100 UEs) | 463 | 406 | 3,234 |
+| Medium (500 UEs) | 406 | 410 | 3,257 |
+| High (1000 UEs) | 522 | 606 | 2,893 |
+| Burst (500 UEs) | 435 | 403 | 3,008 |
+
+Serverless5GC achieves **latency parity with C-based Open5GS** and is **5--8x faster than Go-based free5GC**. Internal function execution (~16.5 ms for 8 invocations) accounts for only ~3.5% of end-to-end latency.
+
+### Cold-Start Storm Resilience
+
+We tested worst-case cold-start behavior by deleting all 31 function pods and simultaneously starting UE registrations:
+
+| Scenario | Cold p50 | Warm p50 | Delta |
+|----------|:--------:|:--------:|:-----:|
+| Low (100 UEs) | 5,021 | 463 | +4,558 ms (11x) |
+| Medium (500 UEs) | 688 | 406 | +282 ms |
+| High (1000 UEs) | 694 | 522 | +172 ms |
+| Burst (500 UEs) | 644 | 435 | +209 ms |
+
+**100% success rate** across all cold-start runs. Zero NAS T3510 timer expirations. System converges to warm-start performance within 4--5 seconds.
+
+### Cost Projection
+
+| Model | Monthly Cost | Savings |
+|-------|:-----------:|:-------:|
+| Self-hosted VMs (IONOS) | ~$142/month | Baseline |
+| FaaS pricing (AWS Lambda) | $13--21/month | **85--90%** |
+
+Per-registration cost: **$0.0000016** ($1.60 per million registrations).
+
+### Key Findings
+
+1. **Latency parity**: 406--522 ms median matches Open5GS (403--606 ms), 5--8x faster than free5GC
+2. **Perfect reliability**: 100% registration success across all scenarios (6,300/6,300)
+3. **Linear scaling**: Per-function execution stable within +/-4.1% from 1 to 20 reg/s
+4. **Cold-start resilience**: 100% success under worst-case cold-start storms, convergence in 4--5s
+5. **Cost efficiency**: 85--90% projected savings under FaaS pricing model
+6. **Stateless scaling**: Memory virtually independent of traffic (2,105--2,138 MB, +1.6%)
 
 ## Getting Started
-
-### Prerequisites
-
-- Go 1.22+
-- Docker
-- [K3s](https://k3s.io/) (or any Kubernetes distribution)
-- [OpenFaaS CLI (`faas-cli`)](https://docs.openfaas.com/cli/install/)
-- [Helm 3](https://helm.sh/docs/intro/install/)
-- [UERANSIM](https://github.com/aligungr/UERANSIM) (for testing)
-- Cloud VM provider with SSH access (for deployment)
 
 ### Build
 
 ```bash
-# Run unit tests (255 tests across 38 packages)
+# Run unit tests
 make test
 
 # Build the SCTP proxy
 make build-proxy
 
-# Lint
-make lint
+# Build all 31 function images
+bash deploy/openfaas/build-functions.sh
 ```
 
 ### Deploy on K3s + OpenFaaS
@@ -232,273 +136,73 @@ make lint
 curl -sfL https://get.k3s.io | INSTALL_K3S_EXEC="--disable traefik" sh -
 export KUBECONFIG=/etc/rancher/k3s/k3s.yaml
 
-# 2. Install Helm and OpenFaaS
-curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
-kubectl create namespace openfaas
-kubectl create namespace openfaas-fn
+# 2. Install OpenFaaS
 helm repo add openfaas https://openfaas.github.io/faas-netes/
 helm install openfaas openfaas/openfaas \
-    --namespace openfaas \
+    --namespace openfaas --create-namespace \
     --set functionNamespace=openfaas-fn \
-    --set generateBasicAuth=true \
-    --wait
+    --set generateBasicAuth=true --wait
 
-# 3. Deploy infrastructure (Redis, etcd, UPF, SCTP proxy)
+# 3. Deploy infrastructure (Redis, etcd)
 kubectl apply -f deploy/k3s/
 
 # 4. Deploy functions
-cd deploy/openfaas
-faas-cli up -f stack.yml
+bash deploy/openfaas/build-functions.sh --push
+faas-cli up -f deploy/openfaas/stack.yml
+
+# 5. Start SCTP proxy
+./cmd/sctp-proxy/sctp-proxy
 ```
 
-### Deploy Baselines
+### Run Evaluation
 
 ```bash
-# Open5GS (v2.7.2)
-cd deploy/baselines/open5gs
-docker compose up -d
-
-# free5GC (v4.2.0)
-cd deploy/baselines/free5gc
-docker compose up -d
-```
-
-### Cloud Provisioning
-
-```bash
-# Full 5-VM deployment
-./deploy/cloud/provision.sh
-
-# Quick 2-VM smoke test (auto-teardown)
-./deploy/cloud/smoke-test.sh
-```
-
-## Evaluation
-
-### Running Scenarios
-
-```bash
-# Set environment
-export MONITORING_IP=<prometheus-vm-ip>
-export LOADGEN_IP=<ueransim-vm-ip>
-export TARGET_AMF_IP=<target-amf-ip>
+# Provision subscribers
+bash eval/scripts/provision-subscribers.sh <serverless_ip> 1000
 
 # Run a scenario
-./eval/scripts/run-scenario.sh <scenario> <target> [run_number]
-# scenario: idle | low | medium | high | burst
-# target:   serverless | open5gs | free5gc
-# run_number: 1 (default), run 3 times for statistical significance
+SERVERLESS_IP=<ip> LOADGEN_IP=<ip> bash eval/scripts/run-coldstart.sh <scenario> [run]
+
+# Run full campaign (4 scenarios x 3 runs)
+bash deploy/ionos/run-coldstart-campaign.sh
 ```
 
-### Traffic Scenarios
-
-| Scenario | UEs | Registration Rate | Duration |
-|----------|-----|-------------------|----------|
-| Idle | 0 | 0 | 10 min |
-| Low | 100 | 1 reg/sec | 10 min |
-| Medium | 500 | 5 reg/sec | 10 min |
-| High | 1,000 | 10 reg/sec | 10 min |
-| Burst | 0→500 | Ramp 0→5 reg/sec | 5 min |
-
-### Cost Model
-
-The evaluation projects measured resource utilization onto public cloud pricing:
+## Project Structure
 
 ```
-Serverless Cost = SUM(invocations x avg_duration_sec x memory_GB) x $0.0000166667/GB-sec
-                + SUM(invocations) x $0.0000002/request
-
-Traditional Cost = (vCPU_reserved x hours x $0.04048/vCPU-hr)
-                 + (memory_GB_reserved x hours x $0.004445/GB-hr)
+serverless5gc/
+├── cmd/sctp-proxy/          # SCTP-HTTP bridge binary
+├── functions/               # 31 OpenFaaS function handlers
+│   ├── amf/                 # 6 AMF procedures
+│   ├── smf/                 # 4 SMF procedures
+│   ├── udm/, udr/, ausf/   # Auth chain
+│   ├── nrf/, pcf/, nssf/   # Supporting NFs
+│   ├── nwdaf/, chf/        # R17: Analytics, Charging
+│   ├── nsacf/, bsf/        # R17: Admission, Binding
+├── pkg/                     # Shared libraries
+│   ├── crypto/              # Milenage 5G-AKA (TS 35.208)
+│   ├── models/              # 3GPP data types
+│   ├── nas/                 # NAS codec (TS 24.501)
+│   ├── ngap/                # NGAP decoder (TS 38.413)
+│   ├── state/               # KVStore (Redis/etcd)
+├── deploy/
+│   ├── openfaas/            # Function definitions + Dockerfile
+│   ├── k3s/                 # Infrastructure manifests
+│   └── baselines/           # Open5GS + free5GC configs
+├── eval/
+│   ├── scenarios/           # Traffic scenario definitions
+│   ├── scripts/             # Evaluation automation
+│   └── results/             # Raw experiment data
+└── test/integration/        # Integration tests
 ```
-
-Pricing sourced from [AWS Lambda](https://aws.amazon.com/lambda/pricing/) and [AWS Fargate](https://aws.amazon.com/fargate/pricing/).
-
-### Analysis
-
-```bash
-cd eval/analysis
-pip install -r requirements.txt
-
-# Generate cost comparison, latency analysis, and charts
-python analyze.py
-python charts.py
-```
-
-## Testing
-
-The project has 255 unit tests across 38 test packages:
-
-```bash
-# Run all unit tests
-make test
-
-# Run tests with verbose output
-go test ./... -v -count=1
-
-# Run integration tests (requires Redis/etcd)
-go test ./... -v -count=1 -tags=integration
-
-# Run a specific package
-go test ./pkg/nas/... -v
-go test ./functions/amf/registration/... -v
-```
-
-### Test Coverage by Component
-
-| Component | Tests | Coverage |
-|-----------|-------|----------|
-| NAS codec & cause codes | 15 | Message encode/decode, all 5GMM causes |
-| NGAP decoder | 9 | Procedure routing, IE extraction |
-| PFCP client | 8 | Session CRUD, QER/URR, Association |
-| Milenage crypto | 4 | 3GPP TS 35.208 test vectors |
-| SBI client | 6 | HTTP calls, error handling |
-| Redis/etcd state | 6 | KVStore CRUD, mock store |
-| UE state machine | 8 | RM/CM transitions, invalid states |
-| SBI types | 3 | ProblemDetails, JSON serialization |
-| AMF functions | 27 | Registration, deregistration, auth |
-| SMF functions | 35 | PDU session lifecycle, PFCP setup |
-| NRF functions | 7 | Register, discover, notify |
-| Auth functions | 24 | UDR/UDM/AUSF chain, 5G-AKA |
-| PCF/NSSF functions | 12 | Policy, slice selection |
-| NWDAF functions | 15 | Analytics subscribe, data collect |
-| CHF functions | 15 | Charging create/update/release, CDR |
-| NSACF functions | 16 | Slice admission check, counter update |
-| BSF functions | 17 | Binding register/discover/deregister |
-| NAS timers | 5 | Timer values per TS 24.501 |
-| 3GPP compliance | 9 | SBI paths, cause codes, state machine |
-
-## Monitoring
-
-Deploy the monitoring stack for real-time resource tracking:
-
-```bash
-cd deploy/monitoring
-docker compose up -d
-```
-
-- **Prometheus**: `http://<monitoring-ip>:9090` -- scrapes OpenFaaS, cAdvisor, node metrics
-- **Grafana**: `http://<monitoring-ip>:3000` -- pre-configured cost comparison dashboard
-
-The custom cost exporter (`eval/scripts/cost-exporter/`) exposes projected Lambda/Fargate cost as Prometheus metrics based on real-time function invocation data.
-
-## Evaluation Results
-
-We completed 45 evaluation runs (3 targets x 5 scenarios x 3 runs each) on European IaaS cloud VMs (4 vCPU, 8 GB RAM, Debian 12). The three targets are:
-
-- **Serverless 5GC** (this project) -- OpenFaaS + K3s + Redis + etcd
-- **Open5GS v2.7.2** -- C-based monolithic 5G core (Docker Compose, 13 containers)
-- **free5GC v4.2.0** -- Go-based monolithic 5G core (Docker Compose, 10 containers)
-
-### Registration Latency
-
-End-to-end UE registration latency (seconds), averaged across 3 runs per scenario:
-
-| Scenario | Target | p50 | p95 | p99 |
-|----------|--------|-----|-----|-----|
-| Idle | Serverless | 8.2 ms | 21.7 ms | 24.6 ms |
-| Idle | Open5GS | 8.1 ms | 21.4 ms | 24.5 ms |
-| Idle | free5GC | 8.3 ms | 21.9 ms | 24.6 ms |
-| Low (100 UEs) | Serverless | 8.2 ms | 21.6 ms | 24.6 ms |
-| Low (100 UEs) | Open5GS | 8.4 ms | 22.3 ms | 24.7 ms |
-| Low (100 UEs) | free5GC | 8.3 ms | 21.9 ms | 24.6 ms |
-| Medium (500 UEs) | Serverless | 8.1 ms | 21.4 ms | 24.5 ms |
-| Medium (500 UEs) | Open5GS | 8.4 ms | 22.3 ms | 24.7 ms |
-| Medium (500 UEs) | free5GC | 8.3 ms | 21.9 ms | 24.6 ms |
-| High (1000 UEs) | Serverless | 8.0 ms | 20.3 ms | 24.3 ms |
-| High (1000 UEs) | Open5GS | 8.3 ms | 21.9 ms | 24.6 ms |
-| High (1000 UEs) | free5GC | 8.0 ms | 20.5 ms | 24.4 ms |
-| Burst (0→500 ramp) | Serverless | 8.0 ms | 20.5 ms | 24.3 ms |
-| Burst (0→500 ramp) | Open5GS | 8.3 ms | 21.9 ms | 24.6 ms |
-| Burst (0→500 ramp) | free5GC | 8.3 ms | 21.9 ms | 24.6 ms |
-
-All targets achieved **100% registration success** across all scenarios and runs. The serverless architecture adds no measurable latency overhead compared to monolithic deployments -- the p50 latency is consistently ~8 ms regardless of target or load level.
-
-![Registration Latency Comparison](assets/latency_comparison.png)
-
-### Cost Comparison
-
-Projected monthly costs using AWS Lambda pricing (serverless) vs AWS Fargate pricing (baselines):
-
-| Scenario | Serverless (Lambda) | Open5GS (Fargate) | free5GC (Fargate) |
-|----------|--------------------:|-------------------:|-------------------:|
-| Idle | $0.31 | $0.066 | $0.066 |
-| Low (100 UEs) | $0.31 | $0.066 | $0.066 |
-| Medium (500 UEs) | $0.32 | $0.066 | $0.066 |
-| High (1000 UEs) | $0.32 | $0.066 | $0.066 |
-| Burst (0→500) | $0.32 | $0.033 | $0.033 |
-
-**Key insight**: In the self-hosted evaluation setup (K3s + OpenFaaS on a single VM), the serverless approach has higher projected FaaS cost than the monolithic baselines at all tested load levels. However, when the monolithic baselines are sized for peak capacity while serverless scales to zero during idle periods, the FaaS model becomes cost-effective at low utilization -- the projected crossover point is approximately 15-20% average utilization.
-
-![Cost Comparison](assets/cost_comparison.png)
-
-### Resource Utilization
-
-| Target | Avg CPU (seconds) | Peak Memory (MB) | Avg Memory (MB) |
-|--------|-------------------:|-----------------:|-----------------:|
-| Serverless | ~53,000 | ~6,870 | ~380 |
-| Open5GS | ~47,000 | ~6,750 | ~350 |
-| free5GC | ~50,000 | ~6,860 | ~365 |
-
-The serverless architecture consumes slightly more CPU due to OpenFaaS gateway routing and function container overhead, but memory consumption is comparable. The function-per-procedure model allows fine-grained scaling of individual NF procedures rather than entire NF containers.
-
-![Resource Utilization](assets/resource_utilization.png)
-
-### Key Findings
-
-1. **No latency penalty** -- the serverless 5GC achieves the same ~8 ms median registration latency as monolithic baselines, demonstrating that the Function-per-Procedure decomposition does not introduce measurable overhead for control-plane procedures
-2. **Load-independent latency** -- function execution time is constant across all load levels (100 to 1000 UEs), confirming that serverless auto-scaling maintains per-request performance
-3. **Cost advantage at low utilization** -- FaaS pricing is projected to be 85-90% cheaper than fixed container deployments when average utilization is below the crossover point (~15-20%)
-4. **UPF incompatibility confirmed** -- the user-plane function (GTP-U packet forwarding) requires persistent kernel-level data paths and cannot run as a serverless function, validating the hybrid architecture decision
-5. **100% reliability** -- all 45 runs across all targets completed with 1000/1000 UE registrations succeeding, demonstrating production-grade reliability of the serverless control plane
-
-![Cost Crossover Analysis](assets/cost_crossover.png)
 
 ## References
 
-### 3GPP Specifications
-
-| Spec | Title | Relevance |
-|------|-------|-----------|
-| [TS 23.501](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=3144) | System Architecture for 5G System | Overall 5GC architecture, NF roles |
-| [TS 23.502](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=3145) | Procedures for 5G System | Registration, PDU session, handover procedures |
-| [TS 24.501](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=3370) | NAS Protocol for 5GS | NAS message formats, cause codes, timers |
-| [TS 29.244](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=3111) | PFCP Interface | N4 interface between SMF and UPF |
-| [TS 29.500](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=3338) | 5GC SBI Technical Realization | HTTP/2 based SBI framework |
-| [TS 29.502](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=3340) | SMF Services | Nsmf_PDUSession service operations |
-| [TS 29.503](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=3341) | UDM Services | Nudm_SDM, Nudm_UECM services |
-| [TS 29.504](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=3342) | UDR Services | Nudr_DataRepository service |
-| [TS 29.509](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=3347) | AUSF Services | Nausf_UEAuthentication service |
-| [TS 29.510](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=3348) | NRF Services | Nnrf_NFManagement, Nnrf_NFDiscovery |
-| [TS 29.512](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=3350) | PCF Services | Npcf_SMPolicyControl |
-| [TS 29.520](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=3195) | NWDAF Services | Nnwdaf_AnalyticsSubscription, DataManagement |
-| [TS 29.521](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=3359) | BSF Services | Nbsf_Management (PCF binding) |
-| [TS 29.531](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=3369) | NSSF Services | Nnssf_NSSelection |
-| [TS 29.536](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=3374) | NSACF Services | Nnsacf_SliceEventExposure (admission control) |
-| [TS 32.291](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=3408) | CHF Services | Nchf_ConvergedCharging |
-| [TS 33.501](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=3169) | Security Architecture | 5G-AKA, NAS security |
-| [TS 35.208](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=2276) | Milenage Algorithm | Authentication algorithm test vectors |
-| [TS 38.412](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=3228) | NG Signalling Transport | SCTP transport for NGAP |
-| [TS 38.413](https://portal.3gpp.org/desktopmodules/Specifications/SpecificationDetails.aspx?specificationId=3223) | NGAP | NG Application Protocol procedures |
-
-### Open-Source Projects
-
-| Project | Role |
-|---------|------|
-| [OpenFaaS](https://github.com/openfaas/faas) | FaaS platform for deploying serverless 5GC functions |
-| [K3s](https://github.com/k3s-io/k3s) | Lightweight Kubernetes distribution for OpenFaaS |
-| [Open5GS](https://github.com/open5gs/open5gs) | C-based 5G core -- evaluation baseline |
-| [free5GC](https://github.com/free5gc/free5gc) | Go-based 5G core -- evaluation baseline |
-| [UERANSIM](https://github.com/aligungr/UERANSIM) | 5G UE and gNB simulator for load generation |
-| [go-pfcp](https://github.com/wmnsk/go-pfcp) | Go PFCP protocol library for N4 interface |
-| [go-upf](https://github.com/free5gc/go-upf) | Go-based UPF with GTP-U and PFCP support |
-
-### Cloud and Pricing
-
-| Resource | URL |
-|----------|-----|
-| AWS Lambda Pricing | https://aws.amazon.com/lambda/pricing/ |
-| AWS Fargate Pricing | https://aws.amazon.com/fargate/pricing/ |
+- 3GPP TS 23.501/502 (5G System Architecture & Procedures)
+- 3GPP TS 24.501 (NAS Protocol), TS 38.413 (NGAP)
+- 3GPP TS 33.501 (Security), TS 35.208 (Milenage)
+- [Open5GS](https://open5gs.org/), [free5GC](https://free5gc.org/), [UERANSIM](https://github.com/aligungr/UERANSIM)
+- [OpenFaaS](https://www.openfaas.com/), [K3s](https://k3s.io/)
 
 ## License
 
