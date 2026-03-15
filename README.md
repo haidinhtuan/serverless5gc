@@ -66,11 +66,11 @@ Serverless5GC follows a **Function-per-Procedure** model: each 3GPP procedure (e
 | Session State | [Redis 7](https://redis.io/) |
 | NRF Registry | [etcd 3.5](https://etcd.io/) |
 | RAN Simulator | [UERANSIM](https://github.com/aligungr/UERANSIM) |
-| Infrastructure | IONOS Cloud (Frankfurt) |
+| Infrastructure | Self-hosted VMs (Frankfurt) |
 
 ## Evaluation Results
 
-We evaluated Serverless5GC against Open5GS (C-based) and free5GC (Go-based) across 4 traffic scenarios on IONOS Cloud VMs (4 vCPU, 8 GB RAM). All results are 3-run averages.
+We evaluated Serverless5GC against Open5GS (C-based) and free5GC (Go-based) across 4 traffic scenarios on dedicated VMs (4 vCPU, 8 GB RAM). All results are 3-run averages.
 
 ### Registration Latency (ms)
 
@@ -100,7 +100,7 @@ We tested worst-case cold-start behavior by deleting all 31 function pods and si
 
 | Model | Monthly Cost | Savings |
 |-------|:-----------:|:-------:|
-| Self-hosted VMs (IONOS) | ~$142/month | Baseline |
+| Self-hosted VMs | ~$142/month | Baseline |
 | FaaS pricing (AWS Lambda) | $13--21/month | **85--90%** |
 
 Per-registration cost: **$0.0000016** ($1.60 per million registrations).
@@ -163,8 +163,8 @@ bash eval/scripts/provision-subscribers.sh <serverless_ip> 1000
 # Run a scenario
 SERVERLESS_IP=<ip> LOADGEN_IP=<ip> bash eval/scripts/run-coldstart.sh <scenario> [run]
 
-# Run full campaign (4 scenarios x 3 runs)
-bash deploy/ionos/run-coldstart-campaign.sh
+# Run full campaign (4 scenarios x 3 runs, adjust for your environment)
+bash eval/scripts/run-campaign.sh
 ```
 
 ## Project Structure
