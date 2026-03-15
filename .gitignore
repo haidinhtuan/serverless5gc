@@ -28,9 +28,7 @@ docs/
 # Cloud provisioning scripts (contains local paths and credentials)
 deploy/cloud/
 deploy/provider/
-
-# Auto-generated VM IP files
-deploy/ionos/vm-ips.env
+deploy/ionos/
 
 # Temporary
 tmp/
