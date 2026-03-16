@@ -10,26 +10,36 @@ A serverless 5G core network implementation using Function-per-Procedure decompo
 
 Serverless5GC follows a **Function-per-Procedure** model: each 3GPP procedure (e.g., UE Registration, PDU Session Establishment) maps to one OpenFaaS function. NF identity is logical -- the "AMF" is a collection of functions sharing state in Redis.
 
-```
-                                                                    ┌──────────────────┐
-┌──────────┐     SCTP      ┌────────────┐    HTTP    ┌─────────┐   │  Function Pool   │
-│ UERANSIM │──────────────>│ SCTP-HTTP  │──────────>│ OpenFaaS │──>│                  │
-│ (gNB+UE) │  (TS 38.412) │   Proxy    │  (NGAP    │ Gateway  │   │  amf-register    │
-└──────────┘               └────────────┘   payload) └─────────┘   │  amf-deregister  │
-                                                                    │  smf-pdu-create  │
-                                                                    │  ausf-auth       │
-                                                                    │  udm-auth-data   │
-                                                                    │  nrf-discover    │
-                                                                    │  ...31 functions │
-                                                                    └────────┬─────────┘
-                                                                             │
-                           ┌─────────────────────────────────────────────────┘
-                           │
-              ┌────────────▼────────────┐
-              │      State Stores       │
-              │  Redis: UE/PDU context  │
-              │  etcd: NRF registry     │
-              └─────────────────────────┘
+```mermaid
+flowchart LR
+    UE["🗼 UERANSIM\n(gNB + UE)"]
+
+    UE -- "SCTP / N2\n(TS 38.412)" --> Proxy["SCTP-HTTP\nProxy"]
+    Proxy -- "HTTP\n(NGAP payload)" --> GW["OpenFaaS\nGateway"]
+
+    subgraph K3s ["K3s Cluster"]
+        GW --> R15
+        GW -.-> R17
+
+        subgraph R15 ["R15 Core — 21 functions"]
+            AMF["AMF (6)"]
+            SMF["SMF (4)"]
+            Core["UDM · UDR · AUSF\nNRF · PCF · NSSF (11)"]
+        end
+
+        subgraph R17 ["R17 — 10 functions"]
+            CHF["CHF (3)"]
+            BSF["BSF (3)"]
+            NSACF["NSACF (2)"]
+            NWDAF["NWDAF (2)"]
+        end
+
+        R15 --> Redis[("Redis\nUE / Session State")]
+        R15 --> Etcd[("etcd\nNRF Registry")]
+        R17 -.-> Redis
+    end
+
+    style R17 stroke:#C00000,stroke-dasharray: 5 5
 ```
 
 ### Key Design Decisions
