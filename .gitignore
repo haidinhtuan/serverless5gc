@@ -44,3 +44,6 @@ overleaf_sync
 
 # Build cache
 .cache/
+
+# Paper sections (managed in overleaf)
+sections/
