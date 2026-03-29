@@ -1,6 +1,6 @@
 # Serverless5GC
 
-A serverless 5G core network implementation using Function-per-Procedure decomposition on OpenFaaS. Serverless5GC maps 31 individual 3GPP procedures across 12 network functions to independent serverless functions, enabling fine-grained scale-to-zero and pay-per-invocation cost efficiency.
+A serverless 5G core network implementation using Procedure-as-a-Function decomposition on OpenFaaS. Serverless5GC maps 31 individual 3GPP procedures across 12 network functions (Release 15--17) to independent serverless functions that scale to zero when idle.
 
 ## Research Question
 
@@ -8,7 +8,7 @@ A serverless 5G core network implementation using Function-per-Procedure decompo
 
 ## Architecture
 
-Serverless5GC follows a **Function-per-Procedure** model: each 3GPP procedure (e.g., UE Registration, PDU Session Establishment) maps to one OpenFaaS function. NF identity is logical -- the "AMF" is a collection of functions sharing state in Redis.
+Serverless5GC follows a **Procedure-as-a-Function** model: each 3GPP procedure (e.g., UE Registration, PDU Session Establishment) maps to one OpenFaaS function. NF identity is logical -- the "AMF" is a collection of functions sharing state in Redis.
 
 ```mermaid
 flowchart LR
@@ -196,7 +196,7 @@ bash eval/scripts/provision-subscribers.sh <serverless_ip> 1000
 # Run a scenario
 SERVERLESS_IP=<ip> LOADGEN_IP=<ip> bash eval/scripts/run-coldstart.sh <scenario> [run]
 
-# Run full campaign (4 scenarios x 3 runs, adjust for your environment)
+# Run full campaign (5 scenarios x 3 runs, adjust for your environment)
 bash eval/scripts/run-campaign.sh
 ```
 
