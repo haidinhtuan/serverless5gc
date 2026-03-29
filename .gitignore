@@ -51,3 +51,6 @@ sections/
 # Paper source files
 *.tex
 *.bib
+
+# Python virtual environment
+.venv/
