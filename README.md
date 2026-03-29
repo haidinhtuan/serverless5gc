@@ -71,7 +71,7 @@ flowchart LR
 
 | Component | Technology |
 |-----------|-----------|
-| Language | Go 1.25+ |
+| Language | Go 1.25.5 |
 | FaaS Platform | [OpenFaaS](https://www.openfaas.com/) on [K3s](https://k3s.io/) |
 | Session State | [Redis 7](https://redis.io/) |
 | NRF Registry | [etcd 3.5](https://etcd.io/) |
