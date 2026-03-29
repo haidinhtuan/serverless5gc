@@ -4,7 +4,7 @@ A serverless 5G core network implementation using Function-per-Procedure decompo
 
 ## Research Question
 
-> Can a serverless (Function-as-a-Service) deployment model reduce the operational cost of running a 5G core network compared to traditional containerized deployments, while maintaining equivalent control plane performance?
+> Can a serverless (Function-as-a-Service) deployment model for the 5G core network maintain equivalent control plane performance to always-on deployments, and under what conditions does it offer a cost advantage?
 
 ## Architecture
 
@@ -71,7 +71,7 @@ flowchart LR
 
 | Component | Technology |
 |-----------|-----------|
-| Language | Go 1.22+ |
+| Language | Go 1.25+ |
 | FaaS Platform | [OpenFaaS](https://www.openfaas.com/) on [K3s](https://k3s.io/) |
 | Session State | [Redis 7](https://redis.io/) |
 | NRF Registry | [etcd 3.5](https://etcd.io/) |
@@ -80,7 +80,7 @@ flowchart LR
 
 ## Evaluation Results
 
-Evaluated against Open5GS (C-based) and free5GC (Go-based) across 4 traffic scenarios on isolated VMs (4 vCPU, 8 GB RAM). All results are 3-run averages measured end-to-end from UERANSIM logs.
+Evaluated against Open5GS (C-based) and free5GC (Go-based) across 5 traffic scenarios (idle, low, medium, high, burst) on isolated VMs (4 vCPU, 8 GB RAM). All results are 3-run averages measured end-to-end from UERANSIM logs.
 
 ### Registration Latency
 
@@ -90,10 +90,10 @@ Evaluated against Open5GS (C-based) and free5GC (Go-based) across 4 traffic scen
 |----------|------------------:|------------:|------------:|
 | Low (100 UEs) | 463 ms | 406 ms | 3,234 ms |
 | Medium (500 UEs) | 406 ms | 410 ms | 3,257 ms |
-| High (1000 UEs) | 522 ms | 606 ms | 2,893 ms |
+| High (1000 UEs) | 522 ms | 606 ms | 3,592 ms |
 | Burst (500 UEs, 50 reg/s) | 435 ms | 403 ms | 3,008 ms |
 
-Serverless5GC achieves **latency parity with C-based Open5GS** (406--522 ms vs 403--606 ms) and is **5--8x faster than Go-based free5GC**. Internal function execution (~16.5 ms for 8 invocations) accounts for only ~3.5% of end-to-end latency; the rest is protocol-inherent NAS round trips.
+Serverless5GC achieves **latency parity with C-based Open5GS** (406--522 ms vs 403--606 ms) and is **5--8x faster than Go-based free5GC**. Internal function execution (15.56 ms for 8 invocations) accounts for 3.4% of end-to-end latency; the rest is protocol-inherent NAS round trips.
 
 ### Resource Consumption
 
@@ -101,8 +101,8 @@ Serverless5GC achieves **latency parity with C-based Open5GS** (406--522 ms vs 4
 
 | | Serverless5GC | Open5GS | free5GC |
 |---|---|---|---|
-| CPU growth (idle to high) | +25% | +160% | +300% |
-| Memory range | 2,105--2,138 MB (+1.6%) | 1,368--1,605 MB (+17%) | 1,378--1,535 MB (+11%) |
+| CPU growth (idle to high) | +25% | +160% | +429% |
+| Memory range | 2,105--2,138 MB (+1.6%) | 1,368--1,605 MB (+17%) | 1,378--1,584 MB (+15%) |
 
 The serverless architecture has a higher baseline (~7.6 s/min idle) due to the K3s/OpenFaaS platform, but CPU scales minimally with traffic. Memory is virtually flat regardless of load, confirming stateless function execution with no per-UE overhead.
 
@@ -110,16 +110,16 @@ The serverless architecture has a higher baseline (~7.6 s/min idle) due to the K
 
 ![Function Breakdown](assets/function-breakdown.png)
 
-Each UE registration triggers a deterministic chain of exactly **8 function invocations** with a total compute time of ~16.5 ms. The `amf-initial-registration` orchestrator dominates (46.5% of compute) while downstream functions complete in under 1 ms.
+Each UE registration triggers a deterministic chain of exactly **8 function invocations** with a total compute time of 15.56 ms. The `amf-initial-registration` orchestrator dominates (49.4% of compute) while downstream functions complete in under 1 ms.
 
 | Metric | Value |
 |--------|-------|
 | Function invocations per registration | 8 |
-| Total internal compute time | 16.5 ms |
+| Total internal compute time | 15.56 ms |
 | Memory per invocation | 128 MB |
 | **Resource-time per registration** | **0.002 GB-s** |
 
-This platform-independent metric enables straightforward cost projection under any FaaS pricing model. The marginal resource cost per registration approaches zero -- costs are dominated by fixed platform overhead, not traffic volume.
+This platform-independent metric maps directly to FaaS billing granularity. A cost model analysis shows serverless is cheaper than always-on when the cluster operates below 65% duty cycle, when 2+ tenants share the platform, or on managed FaaS platforms up to 609 reg/s.
 
 ### Cold-Start Storm Resilience
 
@@ -129,12 +129,12 @@ Worst-case test: all 31 function pods deleted, UE registrations started simultan
 
 | Scenario | Cold p50 | Warm p50 | Penalty |
 |----------|:--------:|:--------:|:-----:|
-| Low (100 UEs) | 5,021 ms | 463 ms | 11x |
-| Medium (500 UEs) | 688 ms | 406 ms | +282 ms |
-| High (1000 UEs) | 694 ms | 522 ms | +172 ms |
-| Burst (500 UEs) | 644 ms | 435 ms | +209 ms |
+| Low (100 UEs) | 5,037 ms | 463 ms | 11x |
+| Medium (500 UEs) | 366 ms | 406 ms | -40 ms |
+| High (1000 UEs) | 377 ms | 522 ms | -145 ms |
+| Burst (500 UEs) | 361 ms | 435 ms | -74 ms |
 
-**100% success rate** across all cold-start runs. Zero NAS T3510 timer expirations. The system converges to warm-start performance within 4--5 seconds as function pods complete initialization. Higher UE counts amortize cold-start latency across concurrent registrations.
+**100% success rate** across all cold-start runs. Zero NAS T3510 timer expirations. The system converges to warm-start performance within 4--5 seconds. In multi-batch scenarios (500--1000 UEs), 80--90% of UEs arrive after pods initialize, pulling the median below the warm baseline; cold-start impact is visible only at p95/p99.
 
 ### Key Findings
 
@@ -144,8 +144,8 @@ Worst-case test: all 31 function pods deleted, UE registrations started simultan
 | 2 | **100% reliability** | 6,300/6,300 registrations successful across all scenarios |
 | 3 | **Load-independent scaling** | Per-function execution stable within +/-4.1% from 1 to 20 reg/s (20x range) |
 | 4 | **Cold-start resilience** | 100% success under simultaneous pod deletion, convergence in 4--5 s |
-| 5 | **Resource efficiency** | 0.002 GB-s per registration; memory flat at ~2.1 GB regardless of traffic |
-| 6 | **Infrastructure consolidation** | All 31 functions + platform on a single VM vs dedicated VMs per baseline |
+| 5 | **Resource efficiency** | 0.002 GB-s per registration; memory flat at 2,105--2,138 MB regardless of traffic |
+| 6 | **Conditional cost advantage** | Cheaper than always-on when duty cycle < 65%, 2+ tenants share platform, or on managed FaaS (up to 609 reg/s) |
 
 ## Getting Started
 
