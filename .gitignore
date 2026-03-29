@@ -47,3 +47,7 @@ overleaf_sync
 
 # Paper sections (managed in overleaf)
 sections/
+
+# Paper source files
+*.tex
+*.bib
