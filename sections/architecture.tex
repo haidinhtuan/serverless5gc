@@ -84,17 +84,17 @@ The N2 interface between the gNB (radio access) and the AMF uses SCTP transport 
 \node[box, fill=nfgreen!15, right=1.2cm of proxy] (gw) {OpenFaaS\\[-1pt]\scriptsize Gateway};
 
 % Function groups - R15 core
-\node[box, fill=nfblue!8, right=1.2cm of gw, minimum width=2.8cm, minimum height=2.8cm] (r15pool) {};
+\node[box, fill=nfblue!8, right=1.2cm of gw, minimum width=2.8cm, minimum height=3.4cm] (r15pool) {};
 \node[above=0pt of r15pool.north, font=\scriptsize\bfseries] {R15 Core (21 fn)};
-\node[funcbox, fill=nfblue!15] at ([yshift=0.6cm]r15pool.center) (amf) {AMF (6)};
+\node[funcbox, fill=nfblue!15] at ([yshift=0.8cm]r15pool.center) (amf) {AMF (6)};
 \node[funcbox, fill=nfblue!15, below=0.15cm of amf] (smf) {SMF (4)};
 \node[funcbox, fill=nfblue!15, below=0.15cm of smf] (rest) {NRF, UDM, UDR,};
 \node[font=\scriptsize, below=-0.05cm of rest] {AUSF, PCF, NSSF (11)};
 
 % R17 functions
-\node[box, fill=r17red!8, right=0.4cm of r15pool, minimum width=2.4cm, minimum height=2.8cm] (r17pool) {};
+\node[box, fill=r17red!8, right=0.4cm of r15pool, minimum width=2.4cm, minimum height=3.4cm] (r17pool) {};
 \node[above=0pt of r17pool.north, font=\scriptsize\bfseries, text=r17red] {R17 (10 fn)};
-\node[funcbox, fill=r17red!12] at ([yshift=0.6cm]r17pool.center) (chf) {CHF (3)};
+\node[funcbox, fill=r17red!12] at ([yshift=0.9cm]r17pool.center) (chf) {CHF (3)};
 \node[funcbox, fill=r17red!12, below=0.15cm of chf] (bsf) {BSF (3)};
 \node[funcbox, fill=r17red!12, below=0.15cm of bsf] (nsacf) {NSACF (2)};
 \node[funcbox, fill=r17red!12, below=0.15cm of nsacf] (nwdaf) {NWDAF (2)};
@@ -110,13 +110,13 @@ The N2 interface between the gNB (radio access) and the AMF uses SCTP transport 
 \draw[arrow] (ueransim) -- node[above, label] {SCTP} (proxy);
 \draw[arrow] (proxy) -- node[above, label] {HTTP} (gw);
 \draw[arrow] (gw) -- node[above, label] {HTTP} (r15pool.west);
-\draw[arrow, dashed, r17red] (gw.east) ++(0,-0.3) -| ([xshift=-0.1cm]r17pool.south west) -- (r17pool.south west);
+\draw[arrow, dashed, r17red] (gw) -- node[above, label, text=r17red] {HTTP} (r17pool.west);
 
 % State arrows
 \draw[arrow, nfpurple] ([xshift=-0.3cm]r15pool.south) |- (redis);
 \draw[arrow, nfpurple] ([xshift=0.3cm]r15pool.south) |- (etcd);
-\draw[arrow, nfpurple, dashed, r17red] (r17pool.south) |- ([yshift=0.1cm]redis.east);
-\draw[arrow, nfgray] (smf.south) ++(0,-0.35) -| (upf.north) node[pos=0.25, above, label] {PFCP (N4)};
+\draw[arrow, dashed, nfpurple] (r17pool.south) |- ([yshift=0.1cm]redis.east);
+\draw[arrow, nfgray] (r15pool.east |- upf.north) -- (upf.north) node[midway, above, label] {PFCP (N4)};
 
 % Protocol labels
 \node[label, above=0.05cm of ueransim.north east, anchor=south west] {N2 (TS 38.412)};
