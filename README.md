@@ -2,6 +2,8 @@
 
 A serverless 5G core network implementation using Procedure-as-a-Function decomposition on OpenFaaS. Serverless5GC maps 31 individual 3GPP procedures across 12 network functions (Release 15--17) to independent serverless functions that scale to zero when idle.
 
+**Paper:** [Serverless5GC: Private 5G Core Deployment via a Procedure-as-a-Function Architecture](https://arxiv.org/abs/2603.27618)
+
 ## Research Question
 
 > Can a serverless (Function-as-a-Service) deployment model for the 5G core network maintain equivalent control plane performance to always-on deployments, and under what conditions does it offer a cost advantage?
