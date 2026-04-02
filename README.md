@@ -241,4 +241,4 @@ serverless5gc/
 
 ## License
 
-This project is developed for academic research purposes.
+This project is licensed under the Apache License 2.0. See [LICENSE](LICENSE) for details.
