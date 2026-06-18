@@ -77,15 +77,28 @@ func Handle(req handler.Request) (handler.Response, error) {
 	}
 
 	authData := sub.AuthenticationData
+
+	// Advance the sequence number before generating the vector so the AUTN
+	// carries a SEQ the USIM will accept (TS 33.102 SQN management). Without a
+	// fresh SEQ the AUTN repeats the stored value and the UE rejects it with
+	// "SQN out of range".
+	newSQN := advanceSQN(authData.SQN)
+
 	av, err := crypto.GenerateAuthVector(
 		authData.PermanentKey,
 		authData.OPc,
-		authData.SQN,
+		newSQN,
 		authData.AMF,
 		authReq.ServingNetworkName,
 	)
 	if err != nil {
 		return errorResp(http.StatusInternalServerError, "generate auth vector: %s", err), nil
+	}
+
+	// Persist the advanced SQN so the next vector uses a strictly higher SEQ.
+	authData.SQN = newSQN
+	if err := Store.Put(ctx, key, &sub); err != nil {
+		return errorResp(http.StatusInternalServerError, "persist SQN: %s", err), nil
 	}
 
 	// Store the auth vector for later verification by AUSF
@@ -107,6 +120,24 @@ func Handle(req handler.Request) (handler.Response, error) {
 		Body:       body,
 		Header:     jsonHeader(),
 	}, nil
+}
+
+// advanceSQN returns the 48-bit sequence number advanced by one SEQ step. The
+// low 5 bits are the IND (TS 33.102); incrementing by 1<<5 keeps the IND fixed
+// and raises SEQ by one, which the USIM requires to accept the next AUTN.
+func advanceSQN(sqn []byte) []byte {
+	var v uint64
+	for _, b := range sqn {
+		v = v<<8 | uint64(b)
+	}
+	const seqStep = 1 << 5
+	v = (v + seqStep) & ((1 << 48) - 1)
+	out := make([]byte, 6)
+	for i := 5; i >= 0; i-- {
+		out[i] = byte(v)
+		v >>= 8
+	}
+	return out
 }
 
 func errorResp(code int, format string, args ...interface{}) handler.Response {
