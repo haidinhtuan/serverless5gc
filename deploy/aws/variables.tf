@@ -29,9 +29,15 @@ variable "subnet_cidr" {
 }
 
 variable "instance_type" {
-  description = "EC2 instance type for both nodes. c5.xlarge = 4 vCPU / 8 GB, matching the IONOS VMs."
+  description = "EC2 instance type for the loadgen node. c5.xlarge = 4 vCPU / 8 GB."
   type        = string
   default     = "c5.xlarge"
+}
+
+variable "serverless_instance_type" {
+  description = "EC2 instance type for serverless5gc (node-a). Set to c5.2xlarge to match free5gc-knative (core-b) for an apples-to-apples comparison."
+  type        = string
+  default     = "c5.2xlarge"
 }
 
 variable "node_a_volume_size" {
@@ -44,6 +50,24 @@ variable "node_b_volume_size" {
   description = "Root volume size (GB) for node-b (loadgen / UERANSIM)."
   type        = number
   default     = 40
+}
+
+variable "deploy_core_b" {
+  description = "Whether to provision core-b (the free5gc-openfaas Knative comparison stack)."
+  type        = bool
+  default     = false
+}
+
+variable "core_b_instance_type" {
+  description = "EC2 instance type for core-b. The Knative + full free5GC + Mongo stack needs more than node-a."
+  type        = string
+  default     = "c5.2xlarge"
+}
+
+variable "core_b_volume_size" {
+  description = "Root volume size (GB) for core-b."
+  type        = number
+  default     = 60
 }
 
 variable "ssh_public_key_path" {

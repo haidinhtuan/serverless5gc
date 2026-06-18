@@ -147,7 +147,7 @@ resource "aws_key_pair" "main" {
 # ---------------------------------------------------------------------------
 resource "aws_instance" "node_a" {
   ami                    = data.aws_ami.ubuntu.id
-  instance_type          = var.instance_type
+  instance_type          = var.serverless_instance_type
   subnet_id              = aws_subnet.public.id
   vpc_security_group_ids = [aws_security_group.nodes.id]
   key_name               = aws_key_pair.main.key_name
@@ -158,7 +158,7 @@ resource "aws_instance" "node_a" {
   }
 
   tags = {
-    Name = "node-a"
+    Name = "serverless5gc"
     Role = "serverless-5gc"
   }
 }
@@ -176,8 +176,31 @@ resource "aws_instance" "node_b" {
   }
 
   tags = {
-    Name = "node-b"
+    Name = "loadgen"
     Role = "loadgen"
+  }
+}
+
+# ---------------------------------------------------------------------------
+# core-b: free5gc-openfaas (Knative) comparison stack. Optional (deploy_core_b).
+# Larger instance: Knative control plane + full free5GC + MongoDB.
+# ---------------------------------------------------------------------------
+resource "aws_instance" "core_b" {
+  count                  = var.deploy_core_b ? 1 : 0
+  ami                    = data.aws_ami.ubuntu.id
+  instance_type          = var.core_b_instance_type
+  subnet_id              = aws_subnet.public.id
+  vpc_security_group_ids = [aws_security_group.nodes.id]
+  key_name               = aws_key_pair.main.key_name
+
+  root_block_device {
+    volume_type = "gp3"
+    volume_size = var.core_b_volume_size
+  }
+
+  tags = {
+    Name = "free5gc-knative"
+    Role = "free5gc-knative"
   }
 }
 

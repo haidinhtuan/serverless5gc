@@ -62,3 +62,6 @@ sections/
 
 # Python virtual environment
 .venv/
+
+# Student comparison repos (external, not part of this project)
+comparison-repos/
