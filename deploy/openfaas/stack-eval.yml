@@ -1,0 +1,116 @@
+# Evaluation subset stack: the 12 functions exercised by the load campaign.
+#
+# The campaign (deploy/ionos/run-eval.sh -> eval/scripts/run-scenario.sh) drives
+# exactly two procedures across all load levels (idle/low/medium/high/burst):
+#   - amf-initial-registration   (1x per simulated UE)
+#   - smf-pdu-session-create     (N x per simulated UE)
+# Their combined call graphs touch the 12 functions below. This is <= the
+# OpenFaaS Community Edition 15-function limit, so the campaign runs on stock
+# OpenFaaS CE with no gateway workaround. The remaining functions in stack.yml
+# are still implemented and tested; they are simply not deployed for the load
+# test. See README-eval-deployment.md.
+version: 1.0
+provider:
+  name: openfaas
+  gateway: http://127.0.0.1:8080
+
+functions:
+  # --- UE Registration path ---
+  amf-initial-registration:
+    lang: dockerfile
+    handler: ./functions/amf/registration
+    image: haidinhtuan/amf-initial-registration:latest
+    environment:
+      REDIS_ADDR: redis:6379
+      ETCD_ENDPOINT: etcd:2379
+      OPENFAAS_GATEWAY: http://gateway.openfaas:8080/function
+
+  amf-auth-initiate:
+    lang: dockerfile
+    handler: ./functions/amf/auth-initiate
+    image: haidinhtuan/amf-auth-initiate:latest
+    environment:
+      REDIS_ADDR: redis:6379
+      OPENFAAS_GATEWAY: http://gateway.openfaas:8080/function
+
+  ausf-authenticate:
+    lang: dockerfile
+    handler: ./functions/ausf/authenticate
+    image: haidinhtuan/ausf-authenticate:latest
+    environment:
+      REDIS_ADDR: redis:6379
+      OPENFAAS_GATEWAY: http://gateway.openfaas:8080/function
+
+  udm-generate-auth-data:
+    lang: dockerfile
+    handler: ./functions/udm/generate-auth-data
+    image: haidinhtuan/udm-generate-auth-data:latest
+    environment:
+      REDIS_ADDR: redis:6379
+      OPENFAAS_GATEWAY: http://gateway.openfaas:8080/function
+
+  udm-get-subscriber-data:
+    lang: dockerfile
+    handler: ./functions/udm/get-subscriber-data
+    image: haidinhtuan/udm-get-subscriber-data:latest
+    environment:
+      REDIS_ADDR: redis:6379
+      OPENFAAS_GATEWAY: http://gateway.openfaas:8080/function
+
+  # --- PDU Session Establishment path ---
+  smf-pdu-session-create:
+    lang: dockerfile
+    handler: ./functions/smf/pdu-session-create
+    image: haidinhtuan/smf-pdu-session-create:latest
+    environment:
+      REDIS_ADDR: redis:6379
+      UPF_PFCP_ADDR: upf:8805
+      OPENFAAS_GATEWAY: http://gateway.openfaas:8080/function
+
+  pcf-policy-create:
+    lang: dockerfile
+    handler: ./functions/pcf/policy-create
+    image: haidinhtuan/pcf-policy-create:latest
+    environment:
+      REDIS_ADDR: redis:6379
+
+  bsf-binding-register:
+    lang: dockerfile
+    handler: ./functions/bsf/binding-register
+    image: haidinhtuan/bsf-binding-register:latest
+    environment:
+      REDIS_ADDR: redis:6379
+      ENABLE_BSF: "true"
+
+  chf-charging-create:
+    lang: dockerfile
+    handler: ./functions/chf/charging-create
+    image: haidinhtuan/chf-charging-create:latest
+    environment:
+      REDIS_ADDR: redis:6379
+      ENABLE_CHARGING: "true"
+
+  # --- Shared by both procedures (slice admission control) ---
+  nsacf-slice-availability-check:
+    lang: dockerfile
+    handler: ./functions/nsacf/slice-availability-check
+    image: haidinhtuan/nsacf-slice-availability-check:latest
+    environment:
+      REDIS_ADDR: redis:6379
+      ENABLE_NSACF: "true"
+
+  nsacf-update-counters:
+    lang: dockerfile
+    handler: ./functions/nsacf/update-counters
+    image: haidinhtuan/nsacf-update-counters:latest
+    environment:
+      REDIS_ADDR: redis:6379
+      ENABLE_NSACF: "true"
+
+  # --- Subscriber provisioning (one-time, before the load run) ---
+  udr-data-write:
+    lang: dockerfile
+    handler: ./functions/udr/data-write
+    image: haidinhtuan/udr-data-write:latest
+    environment:
+      REDIS_ADDR: redis:6379

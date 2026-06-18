@@ -1,0 +1,21 @@
+# Keep the Docker build context minimal: only Go sources and module files are
+# needed to compile the handler. This also ensures local-only and sensitive
+# files never enter even the (discarded) builder layer.
+.git
+.gitignore
+*.md
+docs/
+figures/
+overleaf_sync/
+eval/results/
+deploy/ionos/
+deploy/monitoring/
+deploy/baselines/
+**/*_test.go
+.claude/
+CLAUDE.md
+.env
+*.env
+*.log
+*.tar
+*.tar.gz

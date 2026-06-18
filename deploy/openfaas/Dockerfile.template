@@ -10,20 +10,35 @@ RUN go mod download
 COPY . .
 
 # Build the function: the build script generates cmd/entry/main.go
-# with the correct import path before invoking docker build.
+# with the correct import path before invoking docker build. The binary is a
+# plain HTTP server (listens on $PORT) that adapts requests into the OpenFaaS
+# go-http handler signature and calls Handle().
 RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /handler ./cmd/entry/
+
+# OpenFaaS function runtime: the of-watchdog fronts every function. It listens on
+# :8080 (what the gateway calls), runs the handler binary once as a persistent
+# child process, and reverse-proxies requests to it over HTTP (mode=http). This
+# is the same execution model the official go-http/golang-middleware templates use.
+FROM ghcr.io/openfaas/of-watchdog:0.10.7 AS watchdog
 
 FROM alpine:3.19
 
 RUN apk --no-cache add ca-certificates
-
 RUN addgroup -S app && adduser -S -g app app
-USER app
 
-COPY --from=builder /handler /handler
+COPY --from=watchdog /fwatchdog /usr/bin/fwatchdog
+COPY --from=builder /handler /usr/bin/handler
+
+# of-watchdog HTTP mode: fork the handler once, proxy to it on :8082.
+ENV mode="http" \
+    fprocess="/usr/bin/handler" \
+    upstream_url="http://127.0.0.1:8082" \
+    PORT="8082"
+
+USER app
 
 EXPOSE 8080
 
 HEALTHCHECK --interval=5s CMD [ -e /tmp/.lock ] || exit 1
 
-CMD ["/handler"]
+CMD ["fwatchdog"]

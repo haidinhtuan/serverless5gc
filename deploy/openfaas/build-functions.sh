@@ -1,11 +1,16 @@
 #!/bin/bash
-# Builds Docker images for all 31 OpenFaaS functions.
+# Builds Docker images for the OpenFaaS functions.
 # Each function is package function with a Handle() method; this script
 # generates a main.go wrapper for each and builds via Dockerfile.template.
+# The resulting images run under the OpenFaaS of-watchdog runtime (see
+# Dockerfile.template).
 #
-# Usage: ./build-functions.sh [--push] [--registry REGISTRY]
+# Usage: ./build-functions.sh [--push] [--registry REGISTRY] [name ...]
 #   --push      Push images to registry after build
 #   --registry  Registry prefix (default: serverless5gc)
+#   name ...    Optional list of function image names to build (a subset).
+#               When omitted, all functions are built. Example:
+#                 ./build-functions.sh amf-initial-registration ausf-authenticate
 #
 # Run from project root:  bash deploy/openfaas/build-functions.sh
 
@@ -16,13 +21,24 @@ PROJECT_DIR="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 REGISTRY="${REGISTRY:-serverless5gc}"
 PUSH=false
+SUBSET=()
 
-for arg in "$@"; do
-    case "$arg" in
+while [ $# -gt 0 ]; do
+    case "$1" in
         --push) PUSH=true ;;
         --registry) shift; REGISTRY="$1" ;;
+        *) SUBSET+=("$1") ;;
     esac
+    shift
 done
+
+# in_subset returns 0 if SUBSET is empty (build everything) or contains $1.
+in_subset() {
+    [ ${#SUBSET[@]} -eq 0 ] && return 0
+    local n
+    for n in "${SUBSET[@]}"; do [ "$n" = "$1" ] && return 0; done
+    return 1
+}
 
 MODULE="github.com/haidinhtuan/serverless5gc"
 DOCKERFILE="${SCRIPT_DIR}/Dockerfile.template"
@@ -127,7 +143,11 @@ func main() {
 GOEOF
 }
 
-echo "=== Building ${#FUNCTIONS[@]} function images ==="
+if [ ${#SUBSET[@]} -eq 0 ]; then
+    echo "=== Building all ${#FUNCTIONS[@]} function images ==="
+else
+    echo "=== Building ${#SUBSET[@]} function image(s): ${SUBSET[*]} ==="
+fi
 echo "Registry: ${REGISTRY}"
 echo ""
 
@@ -138,7 +158,9 @@ for entry in "${FUNCTIONS[@]}"; do
     IFS=':' read -r IMAGE_NAME FUNC_PKG <<< "$entry"
     IMAGE="${REGISTRY}/${IMAGE_NAME}:latest"
 
-    echo "[$((BUILT + FAILED + 1))/${#FUNCTIONS[@]}] Building ${IMAGE}..."
+    in_subset "$IMAGE_NAME" || continue
+
+    echo "[$((BUILT + FAILED + 1))] Building ${IMAGE}..."
 
     # Generate main.go for this function.
     generate_main "$FUNC_PKG"
