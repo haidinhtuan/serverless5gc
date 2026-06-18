@@ -182,8 +182,12 @@ helm install openfaas openfaas/openfaas \
 kubectl apply -f deploy/k3s/
 
 # 4. Deploy functions
-bash deploy/openfaas/build-functions.sh --push
-faas-cli up -f deploy/openfaas/stack.yml
+# OpenFaaS CE caps deployments at 15 functions and only accepts public images.
+# The evaluation exercises 12 functions (UE registration + PDU session
+# establishment), which fits the cap, so deploy that subset from public images.
+# See deploy/openfaas/README-eval-deployment.md for the rationale and options.
+bash deploy/openfaas/build-functions.sh --push --registry <public-registry>
+faas-cli deploy -f deploy/openfaas/stack-eval.yml
 
 # 5. Start SCTP proxy
 ./cmd/sctp-proxy/sctp-proxy
