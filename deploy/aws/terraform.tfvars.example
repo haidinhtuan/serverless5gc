@@ -1,0 +1,17 @@
+# Copy to terraform.tfvars and edit. terraform.tfvars is gitignored.
+
+region      = "eu-central-1"
+aws_profile = "serverless5gc"
+
+# Lock SSH and metrics ports to your own address. Find it with: curl ifconfig.me
+admin_cidr = "203.0.113.10/32"
+
+ssh_public_key_path = "~/.ssh/id_rsa.pub"
+
+# Set true to keep stable IPs across instance stop/start (small hourly cost when stopped).
+use_elastic_ips = false
+
+# Defaults match the IONOS VMs; override only if needed.
+# instance_type      = "c5.xlarge"
+# node_a_volume_size = 50
+# node_b_volume_size = 40

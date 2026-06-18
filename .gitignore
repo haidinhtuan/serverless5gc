@@ -30,6 +30,14 @@ deploy/cloud/
 deploy/provider/
 deploy/ionos/
 
+# AWS Terraform: track sanitized .tf + README, ignore state/secrets/generated env
+deploy/aws/.terraform/
+deploy/aws/.terraform.lock.hcl
+deploy/aws/terraform.tfvars
+deploy/aws/*.tfstate
+deploy/aws/*.tfstate.*
+deploy/aws/vm-ips-aws.env
+
 # Temporary
 tmp/
 *.tmp
