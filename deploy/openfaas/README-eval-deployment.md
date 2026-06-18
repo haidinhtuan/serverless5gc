@@ -45,6 +45,48 @@ Tracing both call graphs, the union of functions actually invoked is **12**:
 other 19 functions remain implemented and unit/integration-tested; they are
 simply not deployed for the load test.
 
+### Call graphs
+
+Functions invoke each other over SBI through the gateway (`pkg/sbi/client.go`,
+`OPENFAAS_GATEWAY=http://gateway.openfaas:8080/function`). There is no NRF
+discovery on the runtime path — calls address `/function/<name>` directly.
+
+```
+amf-initial-registration
+├─ amf-auth-initiate
+│  └─ udm-generate-auth-data        # 5G-AKA vectors; reads subscribers/<SUPI> from Redis
+├─ ausf-authenticate                # verifies RES*
+├─ udm-get-subscriber-data          # Nudm_SDM_Get (reads Redis)
+├─ nsacf-slice-availability-check    # conditional on requested S-NSSAI
+└─ nsacf-update-counters
+
+smf-pdu-session-create
+├─ pcf-policy-create                # SM policy
+├─ nsacf-slice-availability-check
+├─ bsf-binding-register
+├─ chf-charging-create
+└─ nsacf-update-counters
+```
+
+Notes:
+- UDM reads subscriber data **directly from Redis** (`subscribers/<SUPI>`), not
+  via the UDR functions. `udr-data-write` is used once before a run to provision
+  subscribers.
+- `amf-initial-registration` also fire-and-forgets a `udm-registration` call,
+  but no such function exists in the stack; the ignored result makes it a no-op.
+
+## Verification
+
+`smoke-eval-subset.sh` provisions the test subscriber
+(`imsi-001010000000001`, the vector from `test/integration/helpers_test.go`) and
+exercises both procedures through the gateway. Expected:
+
+```
+provision subscriber : HTTP 201
+registration         : HTTP 200   {"status":"registered", ...}
+pdu session create   : HTTP 201   {"state":"ACTIVE", ...}
+```
+
 ## Function runtime
 
 Function images run under the genuine OpenFaaS **of-watchdog** runtime
@@ -98,9 +140,28 @@ bash deploy/openfaas/build-functions.sh amf-initial-registration ausf-authentica
 
 With no arguments it builds all functions (see `stack.yml`).
 
-## Historical note: fn-router
+## Design history
 
-An earlier iteration deployed **all 31** functions and bypassed the CE
-invocation limit with `fn-router`, an nginx reverse proxy. That approach was
-retired in favour of the 12-function subset above, which runs on unmodified
-OpenFaaS CE. See `archive/fn-router-retired.md`.
+The deployment approach evolved as the OpenFaaS CE restrictions surfaced:
+
+1. **All 31 via raw manifests.** To get past the CE *deploy-time* 15-function
+   cap and the public-image rule, all 31 functions were applied as plain K8s
+   Deployments+Services (`gen-k8s-manifests.py` + `kubectl apply`). This worked
+   for deployment but the gateway then blocked *every* invocation with HTTP 405
+   (the invocation-time cap).
+2. **fn-router.** An nginx reverse proxy (`archive/fn-router-retired.md`) was
+   added to route `/function/<name>` straight to each Service, bypassing the
+   gateway's invocation cap. Combined with a bare `net/http` container (no
+   watchdog), this effectively stopped using OpenFaaS on the request path —
+   only the handler SDK types remained.
+3. **12-function subset (current).** Recognising that the campaign exercises
+   only registration + PDU-session establishment (12 functions ≤ 15), we dropped
+   the subset to within the CE limit, retired fn-router, and returned to the
+   stock OpenFaaS gateway.
+4. **of-watchdog runtime + public images (current).** The function images were
+   rebuilt to run under the genuine of-watchdog runtime, published to public
+   Docker Hub, and deployed with `faas-cli` — making the deployment stock
+   OpenFaaS CE end to end (deploy, runtime, and gateway), with no workaround.
+
+The net effect: the system implements the full 31-function core, but the
+*evaluation* runs the 12-function workload subset on an unmodified OpenFaaS CE.
